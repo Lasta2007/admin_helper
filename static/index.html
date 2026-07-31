@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Helper</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo">Admin Helper</div>
+  <div class="nav-item active">IPAM</div>
+</div>
+
+<div class="main">
+  <div id="netView">
+    <div class="header">
+      <h2>Подсети</h2>
+      <div class="toolbar">
+        <button id="addBtn">Добавить</button>
+        <button id="editBtn">Редактировать</button>
+        <button id="deleteBtn" class="danger">Удалить</button>
+      </div>
+    </div>
+    <table class="grid">
+      <thead><tr><th>Подсеть</th><th>Описание</th></tr></thead>
+      <tbody id="networks"></tbody>
+    </table>
+  </div>
+
+  <div id="hostView" class="hidden">
+    <div class="header">
+      <a id="backBtn" class="back" href="#">← Назад</a>
+      <h2 id="networkTitle">Подсеть</h2>
+    </div>
+    <table class="grid">
+      <thead><tr><th>IP</th><th>Hostname</th><th>Комментарий</th></tr></thead>
+      <tbody id="hosts"></tbody>
+    </table>
+  </div>
+</div>
+<script src="js/app.js"></script>
+
+<div id="networkModal" class="modal hidden">
+ <div class="modal-content">
+  <h3 id="modalTitle">Подсеть</h3>
+  <label>Подсеть (CIDR)</label>
+  <input id="cidrInput" type="text">
+  <label>Описание</label>
+  <input id="descInput" type="text">
+  <div class="modal-buttons">
+   <button id="saveNetworkBtn">Сохранить</button>
+   <button id="cancelNetworkBtn">Отмена</button>
+  </div>
+ </div>
+</div>
+
+</body>
+</html>
