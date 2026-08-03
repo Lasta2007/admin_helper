@@ -270,7 +270,18 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
     update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
     update_mac = mac if mac else (current_host["mac"] if current_host else "")
     
-    update_online(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac)
+    # Если хост существует - обновляем, иначе создаем новую запись
+    if current_host:
+        update_online(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac)
+    else:
+        save_host(
+            network_id=network_id,
+            ip=ip,
+            hostname=update_hostname,
+            comment="",
+            online=1 if is_online else 0,
+            mac=update_mac
+        )
     
     return {
         "status": "ok",
