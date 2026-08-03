@@ -31,6 +31,7 @@ def init_db():
         hostname TEXT DEFAULT '',
         comment TEXT DEFAULT '',
         online INTEGER DEFAULT 0,
+        mac TEXT DEFAULT '',
         last_ping TEXT,
         UNIQUE(network_id, ip),
         FOREIGN KEY(network_id) REFERENCES networks(id)
@@ -42,6 +43,7 @@ def init_db():
     );
 
     INSERT OR IGNORE INTO settings(key, value) VALUES('ping_interval', '60');
+    INSERT OR IGNORE INTO settings(key, value) VALUES('ping_timeout', '3');
     """)
 
     conn.commit()
@@ -179,7 +181,8 @@ def save_host(network_id: int,
               ip: str,
               hostname: str,
               comment: str,
-              online: int = 0):
+              online: int = 0,
+              mac: str = ''):
     """
     Создает запись, если её нет,
     либо обновляет существующую.
@@ -205,15 +208,17 @@ def save_host(network_id: int,
                 ip,
                 hostname,
                 comment,
-                online
+                online,
+                mac
             )
-            VALUES(?,?,?,?,?)
+            VALUES(?,?,?,?,?,?)
         """, (
             network_id,
             ip,
             hostname,
             comment,
-            online
+            online,
+            mac
         ))
 
     else:
@@ -222,12 +227,14 @@ def save_host(network_id: int,
             UPDATE hosts
             SET hostname=?,
                 comment=?,
-                online=?
+                online=?,
+                mac=?
             WHERE id=?
         """, (
             hostname,
             comment,
             online,
+            mac,
             row["id"]
         ))
 
@@ -238,18 +245,24 @@ def save_host(network_id: int,
 def update_online(network_id: int,
                   ip: str,
                   online: int,
-                  last_ping: str):
+                  last_ping: str,
+                  hostname: str = '',
+                  mac: str = ''):
     conn = get_connection()
 
     conn.execute("""
         UPDATE hosts
         SET online=?,
-            last_ping=?
+            last_ping=?,
+            hostname=?,
+            mac=?
         WHERE network_id=?
           AND ip=?
     """, (
         online,
         last_ping,
+        hostname,
+        mac,
         network_id,
         ip
     ))

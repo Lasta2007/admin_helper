@@ -4,6 +4,7 @@ import ipaddress
 import subprocess
 import asyncio
 from datetime import datetime
+import re
 
 from database import (
     get_networks,
@@ -31,10 +32,12 @@ class HostUpdate(BaseModel):
     hostname: str = ""
     comment: str = ""
     online: int = 0
+    mac: str = ""
 
 
 class SettingsUpdate(BaseModel):
     ping_interval: int
+    ping_timeout: int = 3
 
 
 def validate_cidr(cidr: str):
@@ -117,6 +120,7 @@ def api_update_host(ip: str, data: HostUpdate):
         hostname=data.hostname,
         comment=data.comment,
         online=data.online,
+        mac=data.mac,
     )
     return {"status": "ok"}
 
@@ -133,6 +137,7 @@ def api_get_settings():
 @router.put("/settings")
 def api_update_settings(data: SettingsUpdate):
     set_setting("ping_interval", str(data.ping_interval))
+    set_setting("ping_timeout", str(data.ping_timeout))
     return {"status": "ok"}
 
 
@@ -140,10 +145,10 @@ def api_update_settings(data: SettingsUpdate):
 # Ping functionality
 # ----------------------------------------------------
 
-async def ping_host(ip: str, timeout: int = 3) -> bool:
+async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
     """
-    Выполняет ping указанного хоста.
-    Возвращает True если хост доступен, иначе False.
+    Выполняет ping указанного хоста и получает hostname/mac.
+    Возвращает кортеж (is_online, hostname, mac).
     timeout - таймаут в секундах (по умолчанию 3)
     """
     try:
@@ -152,20 +157,83 @@ async def ping_host(ip: str, timeout: int = 3) -> bool:
         # -W timeout: таймаут в секундах (Linux)
         process = await asyncio.create_subprocess_exec(
             "ping", "-c", "1", "-W", str(timeout), ip,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
-        await process.wait()
-        return process.returncode == 0
+        stdout, _ = await process.communicate()
+        is_online = process.returncode == 0
+        
+        hostname = ""
+        mac = ""
+        
+        if is_online:
+            # Получаем hostname через reverse DNS lookup
+            try:
+                dns_process = await asyncio.create_subprocess_exec(
+                    "host", ip,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                dns_stdout, _ = await dns_process.communicate()
+                if dns_process.returncode == 0:
+                    output = dns_stdout.decode().strip()
+                    # Извлекаем hostname из вывода host команды
+                    match = re.search(r'pointer\s+(\S+)', output, re.IGNORECASE)
+                    if match:
+                        hostname = match.group(1).rstrip('.')
+            except Exception:
+                pass
+            
+            # Получаем MAC адрес через arp
+            try:
+                arp_process = await asyncio.create_subprocess_exec(
+                    "arp", "-n", ip,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                arp_stdout, _ = await arp_process.communicate()
+                if arp_process.returncode == 0:
+                    output = arp_stdout.decode().strip()
+                    # Извлекаем MAC адрес из вывода arp команды
+                    # Формат: Address HWtype HWaddress Flags Mask Iface
+                    parts = output.split()
+                    if len(parts) >= 3:
+                        mac_candidate = parts[2].upper()
+                        # Проверяем формат MAC адреса (XX:XX:XX:XX:XX:XX)
+                        if re.match(r'^([0-9A-F]{2}[:-]){5}[0-9A-F]{2}$', mac_candidate):
+                            mac = mac_candidate
+            except Exception:
+                pass
+        
+        return is_online, hostname, mac
     except Exception:
-        return False
+        return False, "", ""
+
+
+async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3):
+    """
+    Выполняет параллельный ping всех хостов в списке.
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    async def ping_and_update(host):
+        is_online, hostname, mac = await ping_host(host["ip"], timeout)
+        # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
+        update_hostname = hostname if hostname else host.get("hostname", "")
+        update_mac = mac if mac else host.get("mac", "")
+        update_online(network_id, host["ip"], 1 if is_online else 0, now, update_hostname, update_mac)
+        return host["ip"], is_online
+    
+    tasks = [ping_and_update(host) for host in hosts]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return results
 
 
 @router.post("/networks/{network_id}/ping")
 async def api_ping_network(network_id: int, timeout: int = 3):
     """
-    Выполняет ping всех хостов в указанной подсети
-    и обновляет их статус доступности.
+    Выполняет параллельный ping всех хостов в указанной подсети
+    и обновляет их статус доступности, hostname и mac.
     timeout - таймаут для каждого ping запроса в секундах (по умолчанию 3)
     """
     network = get_network(network_id)
@@ -173,10 +241,7 @@ async def api_ping_network(network_id: int, timeout: int = 3):
         raise HTTPException(status_code=404, detail="Подсеть не найдена")
 
     hosts = get_hosts(network_id)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    for host in hosts:
-        is_online = await ping_host(host["ip"], timeout)
-        update_online(network_id, host["ip"], 1 if is_online else 0, now)
+    
+    await ping_all_hosts_parallel(hosts, network_id, timeout)
 
     return {"status": "ok", "pinged": len(hosts)}
