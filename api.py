@@ -1,10 +1,11 @@
+import asyncio
+import subprocess
+import socket
+import re
+from typing import List, Dict, Any, Optional, Tuple
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-import ipaddress
-import subprocess
-import asyncio
-from datetime import datetime
-import re
 
 from database import (
     get_networks,
@@ -43,10 +44,62 @@ class SettingsUpdate(BaseModel):
 
 
 def validate_cidr(cidr: str):
+    import ipaddress
     try:
         return ipaddress.ip_network(cidr, strict=False)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Некорректная подсеть: {e}")
+
+
+async def get_hostname(ip: str) -> str:
+    """Получение hostname через reverse DNS lookup."""
+    try:
+        hostname, _, _ = await asyncio.get_event_loop().run_in_executor(
+            None, socket.gethostbyaddr, ip
+        )
+        return hostname.split('.')[0]  # Возвращаем только короткое имя
+    except (socket.herror, socket.gaierror, Exception):
+        return ""
+
+
+async def get_mac_address(ip: str) -> str:
+    """Получение MAC адреса через ARP таблицу."""
+    try:
+        # Попытка через команду ip neigh (более современная)
+        result = await asyncio.create_subprocess_exec(
+            "ip", "neigh", "show", ip,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, _ = await result.communicate()
+        output = stdout.decode().strip()
+        
+        # Парсинг вывода: "192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
+        match = re.search(r'lladdr\s+([0-9a-fA-F:]{17})', output)
+        if match:
+            return match.group(1).lower()
+            
+        # Попытка через команду arp (классическая)
+        result = await asyncio.create_subprocess_exec(
+            "arp", "-n", ip,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, _ = await result.communicate()
+        output = stdout.decode().strip()
+        
+        # Парсинг вывода arp: "192.168.1.1  0x1  ether  aa:bb:cc:dd:ee:ff  C  eth0"
+        lines = output.split('\n')
+        for line in lines:
+            if ip in line:
+                parts = line.split()
+                for part in parts:
+                    if re.match(r'^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$', part):
+                        return part.lower()
+    except Exception:
+        pass
+    
+    return ""
 
 
 @router.get("/networks")
@@ -169,41 +222,15 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
         mac = ""
         
         if is_online:
-            # Получаем hostname через reverse DNS lookup
+            # Получаем hostname через reverse DNS lookup с использованием socket
             try:
-                dns_process = await asyncio.create_subprocess_exec(
-                    "host", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                dns_stdout, _ = await dns_process.communicate()
-                if dns_process.returncode == 0:
-                    output = dns_stdout.decode().strip()
-                    # Извлекаем hostname из вывода host команды
-                    match = re.search(r'pointer\s+(\S+)', output, re.IGNORECASE)
-                    if match:
-                        hostname = match.group(1).rstrip('.')
+                hostname = await get_hostname(ip)
             except Exception:
                 pass
             
-            # Получаем MAC адрес через arp
+            # Получаем MAC адрес через arp или ip neigh
             try:
-                arp_process = await asyncio.create_subprocess_exec(
-                    "arp", "-n", ip,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                arp_stdout, _ = await arp_process.communicate()
-                if arp_process.returncode == 0:
-                    output = arp_stdout.decode().strip()
-                    # Извлекаем MAC адрес из вывода arp команды
-                    # Формат: Address HWtype HWaddress Flags Mask Iface
-                    parts = output.split()
-                    if len(parts) >= 3:
-                        mac_candidate = parts[2].upper()
-                        # Проверяем формат MAC адреса (XX:XX:XX:XX:XX:XX)
-                        if re.match(r'^([0-9A-F]{2}[:-]){5}[0-9A-F]{2}$', mac_candidate):
-                            mac = mac_candidate
+                mac = await get_mac_address(ip)
             except Exception:
                 pass
         
