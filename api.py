@@ -622,7 +622,21 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
         update_hostname = hostname if hostname else host.get("hostname", "")
         update_mac = mac if mac else host.get("mac", "")
         logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
-        update_online(network_id, host["ip"], 1 if is_online else 0, now, update_hostname, update_mac)
+        # Если хост доступен - создаем/обновляем запись, если нет - только обновляем статус если запись существует
+        if is_online:
+            save_host(
+                network_id=network_id,
+                ip=ip,
+                hostname=update_hostname,
+                comment="",
+                online=1,
+                mac=update_mac
+            )
+        else:
+            # Для недоступных хостов обновляем только если запись уже существует
+            current_host = get_host(network_id, ip)
+            if current_host:
+                update_online(network_id, ip, 0, now, update_hostname, update_mac)
         return host["ip"], is_online
     
     # Используем gather для параллельного выполнения с ограничением через семафор
@@ -647,14 +661,17 @@ async def api_ping_network(network_id: int):
         logger.error(f"[api_ping_network] Подсеть ID={network_id} не найдена")
         raise HTTPException(status_code=404, detail="Подсеть не найдена")
 
-    hosts = get_hosts(network_id)
+    # Генерируем все хосты из подсети, а не только те, что есть в БД
+    net = ipaddress.ip_network(network["cidr"], strict=False)
+    hosts_to_ping = [{"ip": str(ip)} for ip in net.hosts()]
+    
     timeout = int(get_setting("ping_timeout", "3"))
     
-    logger.info(f"[api_ping_network] Пинг {len(hosts)} хостов в подсети {network['cidr']} с таймаутом {timeout}с")
-    await ping_all_hosts_parallel(hosts, network_id, timeout)
+    logger.info(f"[api_ping_network] Пинг {len(hosts_to_ping)} хостов в подсети {network['cidr']} с таймаутом {timeout}с")
+    await ping_all_hosts_parallel(hosts_to_ping, network_id, timeout)
 
     logger.info(f"[api_ping_network] Пинг подсети ID={network_id} завершен")
-    return {"status": "ok", "pinged": len(hosts)}
+    return {"status": "ok", "pinged": len(hosts_to_ping)}
 
 
 @router.post("/hosts/{ip}/ping")
