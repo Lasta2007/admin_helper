@@ -3,6 +3,7 @@ const API='/api/networks';
 let selected=null;
 let editNetworkId=null;
 let pingIntervalTimer=null;
+let currentNetworkId=null;
 
 // Получаем элементы модального окна
 const networkModal=document.getElementById('networkModal');
@@ -80,6 +81,7 @@ document.getElementById('saveSettingsBtn').onclick=async()=>{
 };
 
 async function openNetwork(network){
+ currentNetworkId=network.id;
  document.getElementById("netView").classList.add("hidden");
  document.getElementById("hostView").classList.remove("hidden");
  document.getElementById("settingsView").classList.add("hidden");
@@ -125,8 +127,8 @@ async function openNetwork(network){
 async function pingNetwork(networkId){
  await fetch("/api/networks/"+networkId+"/ping",{method:"POST"});
  // Обновляем отображение после пинга
- const network=getCurrentNetwork();
- if(network){
+ if(currentNetworkId){
+   const network={id:currentNetworkId};
    openNetwork(network);
  }
 }
@@ -151,9 +153,9 @@ async function setupPingInterval(networkId){
  },interval);
 }
 
-document.getElementById('pingBtn').onclick=()=>{
- if(selected){
-   pingNetwork(selected.id);
+document.getElementById('pingBtn').onclick=async()=>{
+ if(currentNetworkId){
+   await pingNetwork(currentNetworkId);
  }
 };
 
