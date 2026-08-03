@@ -62,28 +62,29 @@ def validate_cidr(cidr: str):
         raise HTTPException(status_code=400, detail=f"Некорректная подсеть: {e}")
 
 
-async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
+async def get_netbios_name(ip: str, timeout: float = 2.0) -> str:
     """Получение NetBIOS имени через UDP запрос на порт 137."""
     logger.info(f"[get_netbios_name] Запрос NetBIOS имени для IP: {ip}")
     try:
-        # NetBIOS Name Service query packet
-        # Запрос на получение имени узла (Node Status Request)
+        # NetBIOS Node Status Request packet
+        # Формат запроса согласно RFC 1002
         netbios_packet = bytes([
-            0x82, 0x54,  # Transaction ID
+            0x82, 0x54,  # Transaction ID (случайное)
             0x00, 0x00,  # Flags: Standard query
             0x00, 0x01,  # Questions: 1
             0x00, 0x00,  # Answer RRs: 0
             0x00, 0x00,  # Authority RRs: 0
             0x00, 0x00,  # Additional RRs: 0
-            0x20,        # Length of name
-            # Encoded name: CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (wildcard query)
+            0x20,        # Length of name (32 символа encoded)
+            # Encoded name: "* " (wildcard) padded to 16 chars then encoded
+            # Символ '*' = 0x41, пробел ' ' = 0x40 в NetBIOS encoding
+            # Для Node Status Request используем wildcard имя
             0x43, 0x4b, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
             0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
             0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
             0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
-            0x41, 0x41,  # Padding to 32 chars
             0x00,        # Null terminator for name
-            0x00, 0x21,  # Type: NBSTAT (33)
+            0x00, 0x21,  # Type: NBSTAT (33) - Node Status Request
             0x00, 0x01,  # Class: IN
         ])
         
@@ -94,7 +95,7 @@ async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
             sock.settimeout(timeout)
             try:
                 sock.sendto(netbios_packet, (ip, 137))
-                data, _ = sock.recvfrom(1024)
+                data, _ = sock.recvfrom(2048)
                 return data
             finally:
                 sock.close()
@@ -102,12 +103,16 @@ async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
         response = await loop.run_in_executor(None, send_netbios_query)
         
         if len(response) < 57:
-            logger.warning(f"[get_netbios_name] Слишком короткий ответ от {ip}")
+            logger.warning(f"[get_netbios_name] Слишком короткий ответ от {ip} (длина: {len(response)})")
             return ""
         
         # Парсим ответ: количество имен в байте 56
         name_count = response[56]
         logger.debug(f"[get_netbios_name] Получено имен от {ip}: {name_count}")
+        
+        if name_count == 0 or name_count > 30:
+            logger.warning(f"[get_netbios_name] Неверное количество имен: {name_count}")
+            return ""
         
         offset = 57
         netbios_name = ""
@@ -119,6 +124,7 @@ async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
             # Имя занимает 15 байт, 16-й байт - тип
             raw_name = response[offset:offset+15]
             name_type = response[offset+15]
+            flags_byte = response[offset+16] if offset+16 < len(response) else 0
             
             # Декодируем имя (пробелы в конце обрезаем)
             try:
@@ -126,21 +132,27 @@ async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
             except Exception:
                 decoded_name = ""
             
-            logger.debug(f"[get_netbios_name] Найдено имя: '{decoded_name}', тип: 0x{name_type:02X}")
+            logger.debug(f"[get_netbios_name] Найдено имя: '{decoded_name}', тип: 0x{name_type:02X}, флаги: 0x{flags_byte:02X}")
             
-            # Тип 0x00 - это уникальное имя узла (Workstation/Server name)
+            # Тип 0x00 - это уникальное имя узла (Workstation/Server name) - приоритет
             # Тип 0x20 - Server Service (также содержит имя компьютера)
-            if name_type in (0x00, 0x20) and decoded_name:
+            # Сначала ищем тип 0x00, если не нашли - берем 0x20
+            if name_type == 0x00 and decoded_name:
                 netbios_name = decoded_name
                 logger.info(f"[get_netbios_name] Для IP {ip} получено NetBIOS имя: {netbios_name} (тип: 0x{name_type:02X})")
-                break
+                return netbios_name
+            elif name_type == 0x20 and decoded_name and not netbios_name:
+                netbios_name = decoded_name
+                logger.debug(f"[get_netbios_name] Найдено резервное имя (тип 0x20): {netbios_name}")
             
             offset += 18
         
-        if not netbios_name:
-            logger.warning(f"[get_netbios_name] Не удалось найти NetBIOS имя в ответе от {ip}")
+        if netbios_name:
+            logger.info(f"[get_netbios_name] Для IP {ip} получено NetBIOS имя (тип 0x20): {netbios_name}")
+            return netbios_name
         
-        return netbios_name
+        logger.warning(f"[get_netbios_name] Не удалось найти NetBIOS имя в ответе от {ip}")
+        return ""
         
     except socket.timeout:
         logger.debug(f"[get_netbios_name] Таймаут при запросе NetBIOS для {ip}")
@@ -170,7 +182,7 @@ async def get_hostname(ip: str) -> str:
     
     # Попытка 2: NetBIOS query (для Windows машин в локальной сети)
     logger.info(f"[get_hostname] Попытка получения NetBIOS имени для {ip}")
-    netbios_name = await get_netbios_name(ip, timeout=1.0)
+    netbios_name = await get_netbios_name(ip, timeout=2.0)
     if netbios_name:
         logger.info(f"[get_hostname] Для IP {ip} получено NetBIOS имя: {netbios_name}")
         return netbios_name
