@@ -34,9 +34,9 @@ build/
 target/
 
 # Coverage
+.coverage
 coverage/
 htmlcov/
-.coverage
 
 # Cache
 .mypy_cache/
