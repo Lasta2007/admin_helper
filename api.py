@@ -6,6 +6,7 @@ import ipaddress
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
+from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -34,6 +35,15 @@ logging.basicConfig(
 logger = logging.getLogger('admin_helper')
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+# Семафор для ограничения количества одновременных ping-запросов
+# Предотвращает перегрузку сети при сканировании больших подсетей
+PING_SEMAPHORE = asyncio.Semaphore(20)
+
+# Кэш для DNS/NetBIOS запросов (TTL 5 минут)
+hostname_cache = {}
+hostname_cache_time = {}
+HOSTNAME_CACHE_TTL = 300  # секунд
 
 
 class NetworkIn(BaseModel):
@@ -162,8 +172,29 @@ async def get_netbios_name(ip: str, timeout: float = 2.0) -> str:
         return ""
 
 
+def _clean_hostname_cache():
+    """Очистка устаревших записей кэша hostname."""
+    import time
+    current_time = time.time()
+    expired_ips = [
+        ip for ip, cache_time in hostname_cache_time.items()
+        if current_time - cache_time > HOSTNAME_CACHE_TTL
+    ]
+    for ip in expired_ips:
+        hostname_cache.pop(ip, None)
+        hostname_cache_time.pop(ip, None)
+
+
 async def get_hostname(ip: str) -> str:
-    """Получение hostname через reverse DNS lookup или NetBIOS."""
+    """Получение hostname через reverse DNS lookup или NetBIOS с кэшированием."""
+    import time
+    
+    # Проверяем кэш
+    current_time = time.time()
+    if ip in hostname_cache and (current_time - hostname_cache_time.get(ip, 0)) < HOSTNAME_CACHE_TTL:
+        logger.debug(f"[get_hostname] Кэш хит для IP: {ip}")
+        return hostname_cache[ip]
+    
     logger.info(f"[get_hostname] Запрос hostname для IP: {ip}")
     
     # Попытка 1: Reverse DNS lookup
@@ -174,6 +205,10 @@ async def get_hostname(ip: str) -> str:
         # Возвращаем только короткое имя (до первой точки)
         short_hostname = hostname.split('.')[0]
         logger.info(f"[get_hostname] Для IP {ip} получен hostname через DNS: {short_hostname} (полный: {hostname})")
+        
+        # Сохраняем в кэш
+        hostname_cache[ip] = short_hostname
+        hostname_cache_time[ip] = current_time
         return short_hostname
     except (socket.herror, socket.gaierror) as e:
         logger.debug(f"[get_hostname] Reverse DNS не удался для {ip}: {type(e).__name__}: {e}")
@@ -185,9 +220,17 @@ async def get_hostname(ip: str) -> str:
     netbios_name = await get_netbios_name(ip, timeout=2.0)
     if netbios_name:
         logger.info(f"[get_hostname] Для IP {ip} получено NetBIOS имя: {netbios_name}")
+        
+        # Сохраняем в кэш
+        hostname_cache[ip] = netbios_name
+        hostname_cache_time[ip] = current_time
         return netbios_name
     
     logger.warning(f"[get_hostname] Не удалось получить hostname/NetBIOS для IP {ip}")
+    
+    # Сохраняем пустой результат в кэш чтобы избежать повторных запросов
+    hostname_cache[ip] = ""
+    hostname_cache_time[ip] = current_time
     return ""
 
 
@@ -506,79 +549,88 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
     Выполняет ping указанного хоста и получает hostname/mac.
     Возвращает кортеж (is_online, hostname, mac).
     timeout - таймаут в секундах (по умолчанию 3)
+    Использует семафор для ограничения параллелизма.
     """
     logger.info(f"[ping_host] Начало пинга для IP: {ip}, таймаут: {timeout}с")
-    try:
-        # Используем subprocess для выполнения ping команды
-        # -c 1: отправить 1 пакет
-        # -W timeout: таймаут в секундах (Linux)
-        process = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", str(timeout), ip,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        stdout, _ = await process.communicate()
-        is_online = process.returncode == 0
-        
-        logger.info(f"[ping_host] Результат пинга для {ip}: {'ONLINE' if is_online else 'OFFLINE'}")
-        
-        hostname = ""
-        mac = ""
-        
-        if is_online:
-            # Получаем hostname через reverse DNS lookup с использованием socket
-            logger.info(f"[ping_host] Хост {ip} доступен, получение hostname...")
-            try:
-                hostname = await get_hostname(ip)
-                if hostname:
-                    logger.info(f"[ping_host] Для {ip} получен hostname: {hostname}")
-                else:
-                    logger.warning(f"[ping_host] Не удалось получить hostname для {ip}")
-            except Exception as e:
-                logger.error(f"[ping_host] Ошибка при получении hostname для {ip}: {type(e).__name__}: {e}")
+    
+    # Используем семафор для ограничения количества одновременных запросов
+    async with PING_SEMAPHORE:
+        try:
+            # Используем subprocess для выполнения ping команды
+            # -c 1: отправить 1 пакет
+            # -W timeout: таймаут в секундах (Linux)
+            process = await asyncio.create_subprocess_exec(
+                "ping", "-c", "1", "-W", str(timeout), ip,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            is_online = process.returncode == 0
             
-            # Получаем MAC адрес через arp или ip neigh
-            logger.info(f"[ping_host] Хост {ip} доступен, получение MAC адреса...")
-            try:
-                mac = await get_mac_address(ip)
-                if mac:
-                    logger.info(f"[ping_host] Для {ip} получен MAC адрес: {mac}")
-                else:
-                    logger.warning(f"[ping_host] Не удалось получить MAC адрес для {ip}")
-            except Exception as e:
-                logger.error(f"[ping_host] Ошибка при получении MAC адреса для {ip}: {type(e).__name__}: {e}")
-        else:
-            logger.warning(f"[ping_host] Хост {ip} недоступен, получение hostname/mac пропущено")
-        
-        logger.info(f"[ping_host] Завершение пинга для {ip}: online={is_online}, hostname='{hostname}', mac='{mac}'")
-        return is_online, hostname, mac
-    except Exception as e:
-        logger.error(f"[ping_host] Критическая ошибка при пинге {ip}: {type(e).__name__}: {e}")
-        return False, "", ""
+            logger.info(f"[ping_host] Результат пинга для {ip}: {'ONLINE' if is_online else 'OFFLINE'}")
+            
+            hostname = ""
+            mac = ""
+            
+            if is_online:
+                # Получаем hostname через reverse DNS lookup с использованием socket
+                logger.info(f"[ping_host] Хост {ip} доступен, получение hostname...")
+                try:
+                    hostname = await get_hostname(ip)
+                    if hostname:
+                        logger.info(f"[ping_host] Для {ip} получен hostname: {hostname}")
+                    else:
+                        logger.warning(f"[ping_host] Не удалось получить hostname для {ip}")
+                except Exception as e:
+                    logger.error(f"[ping_host] Ошибка при получении hostname для {ip}: {type(e).__name__}: {e}")
+                
+                # Получаем MAC адрес через arp или ip neigh
+                logger.info(f"[ping_host] Хост {ip} доступен, получение MAC адреса...")
+                try:
+                    mac = await get_mac_address(ip)
+                    if mac:
+                        logger.info(f"[ping_host] Для {ip} получен MAC адрес: {mac}")
+                    else:
+                        logger.warning(f"[ping_host] Не удалось получить MAC адрес для {ip}")
+                except Exception as e:
+                    logger.error(f"[ping_host] Ошибка при получении MAC адреса для {ip}: {type(e).__name__}: {e}")
+            else:
+                logger.warning(f"[ping_host] Хост {ip} недоступен, получение hostname/mac пропущено")
+            
+            logger.info(f"[ping_host] Завершение пинга для {ip}: online={is_online}, hostname='{hostname}', mac='{mac}'")
+            return is_online, hostname, mac
+        except Exception as e:
+            logger.error(f"[ping_host] Критическая ошибка при пинге {ip}: {type(e).__name__}: {e}")
+            return False, "", ""
 
 
 async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3):
     """
-    Выполняет параллельный ping всех хостов в списке.
+    Выполняет параллельный ping всех хостов в списке с ограничением параллелизма.
     """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"[ping_all_hosts_parallel] Начало параллельного пинга {len(hosts)} хостов для подсети ID={network_id}")
     
+    # Очищаем кэш hostname перед началом сканирования
+    _clean_hostname_cache()
+    
     async def ping_and_update(host):
         ip = host["ip"]
-        logger.info(f"[ping_and_update] Обработка хоста {ip}...")
+        logger.debug(f"[ping_and_update] Обработка хоста {ip}...")
         is_online, hostname, mac = await ping_host(ip, timeout)
         # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
         update_hostname = hostname if hostname else host.get("hostname", "")
         update_mac = mac if mac else host.get("mac", "")
-        logger.info(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
+        logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
         update_online(network_id, host["ip"], 1 if is_online else 0, now, update_hostname, update_mac)
         return host["ip"], is_online
     
+    # Используем gather для параллельного выполнения с ограничением через семафор
     tasks = [ping_and_update(host) for host in hosts]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     success_count = sum(1 for r in results if isinstance(r, tuple) and len(r) == 2 and r[1])
-    logger.info(f"[ping_all_hosts_parallel] Завершение пинга: всего={len(hosts)}, успешно={success_count}")
+    error_count = sum(1 for r in results if isinstance(r, Exception))
+    logger.info(f"[ping_all_hosts_parallel] Завершение пинга: всего={len(hosts)}, успешно={success_count}, ошибок={error_count}")
     return results
 
 
