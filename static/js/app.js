@@ -15,14 +15,17 @@ const saveNetworkBtn=document.getElementById('saveNetworkBtn');
 const cancelNetworkBtn=document.getElementById('cancelNetworkBtn');
 
 // Навигация
-document.querySelectorAll('.nav-item').forEach(item=>{
-  item.addEventListener('click',function(){
-    document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
-    this.classList.add('active');
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.nav-item').forEach(item=>{
+    item.addEventListener('click',function(){
+      document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
+      this.classList.add('active');
+    });
   });
+
+  document.getElementById('settingsNav').onclick=()=>showSettings();
 });
 
-document.getElementById('settingsNav').onclick=()=>showSettings();
 document.getElementById('backBtn').onclick=(e)=>{
  e.preventDefault();
  showNetworks();
@@ -121,7 +124,7 @@ async function openNetwork(network){
  });
 
  // Запускаем периодический ping для этой подсети
- setupPingInterval(network.id);
+ setupPingInterval(currentNetworkId);
 }
 
 async function pingNetwork(networkId){
@@ -144,13 +147,13 @@ async function setupPingInterval(networkId){
  
  if(!networkId)return;
  
- const res=await fetch('/api/settings');
- const data=await res.json();
- const interval=(parseInt(data.ping_interval)||60)*1000;
- 
- pingIntervalTimer=setInterval(()=>{
-   pingNetwork(networkId);
- },interval);
+ fetch('/api/settings').then(res=>res.json()).then(data=>{
+   const interval=(parseInt(data.ping_interval)||60)*1000;
+   
+   pingIntervalTimer=setInterval(()=>{
+     pingNetwork(networkId);
+   },interval);
+ });
 }
 
 document.getElementById('pingBtn').onclick=async()=>{
