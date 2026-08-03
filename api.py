@@ -140,17 +140,18 @@ def api_update_settings(data: SettingsUpdate):
 # Ping functionality
 # ----------------------------------------------------
 
-async def ping_host(ip: str) -> bool:
+async def ping_host(ip: str, timeout: int = 3) -> bool:
     """
     Выполняет ping указанного хоста.
     Возвращает True если хост доступен, иначе False.
+    timeout - таймаут в секундах (по умолчанию 3)
     """
     try:
         # Используем subprocess для выполнения ping команды
         # -c 1: отправить 1 пакет
-        # -w 1: таймаут 1 секунда (Linux)
+        # -W timeout: таймаут в секундах (Linux)
         process = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-w", "1", ip,
+            "ping", "-c", "1", "-W", str(timeout), ip,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
@@ -161,10 +162,11 @@ async def ping_host(ip: str) -> bool:
 
 
 @router.post("/networks/{network_id}/ping")
-async def api_ping_network(network_id: int):
+async def api_ping_network(network_id: int, timeout: int = 3):
     """
     Выполняет ping всех хостов в указанной подсети
     и обновляет их статус доступности.
+    timeout - таймаут для каждого ping запроса в секундах (по умолчанию 3)
     """
     network = get_network(network_id)
     if network is None:
@@ -174,7 +176,7 @@ async def api_ping_network(network_id: int):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for host in hosts:
-        is_online = await ping_host(host["ip"])
+        is_online = await ping_host(host["ip"], timeout)
         update_online(network_id, host["ip"], 1 if is_online else 0, now)
 
     return {"status": "ok", "pinged": len(hosts)}

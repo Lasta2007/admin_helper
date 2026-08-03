@@ -31,6 +31,11 @@ document.getElementById('backBtn').onclick=(e)=>{
  showNetworks();
 };
 
+document.getElementById('settingsBackBtn').onclick=(e)=>{
+ e.preventDefault();
+ showNetworks();
+};
+
 async function load(){
  const res=await fetch(API);
  const data=await res.json();
@@ -80,7 +85,6 @@ document.getElementById('saveSettingsBtn').onclick=async()=>{
    body:JSON.stringify({ping_interval:parseInt(interval)})
  });
  alert('Настройки сохранены');
- setupPingInterval();
 };
 
 async function openNetwork(network){
@@ -99,7 +103,8 @@ async function openNetwork(network){
  hosts.forEach(host=>{
    const tr=document.createElement("tr");
    const statusClass=host.online?'status-online':'status-offline';
-   tr.innerHTML=`<td><span class="status-dot ${statusClass}"></span></td>
+   const lastPing=host.last_ping||'Никогда';
+   tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
    <td>${host.ip}</td>
    <td><input class="inlineHostname" value="${host.hostname||''}"></td>
    <td><input class="inlineComment" value="${host.comment||''}"></td>`;
@@ -123,17 +128,17 @@ async function openNetwork(network){
    tbody.appendChild(tr);
  });
 
- // Запускаем периодический ping для этой подсети
+ // Запускаем периодический ping всех подсетей
  setupPingInterval(currentNetworkId);
 }
 
 async function pingNetwork(networkId){
- await fetch("/api/networks/"+networkId+"/ping",{method:"POST"});
- // Обновляем отображение после пинга
- if(currentNetworkId){
-   const network={id:currentNetworkId};
-   openNetwork(network);
- }
+  await fetch("/api/networks/"+networkId+"/ping",{method:"POST"});
+  // Обновляем отображение после пинга только для текущей подсети
+  if(currentNetworkId===networkId){
+    const network={id:currentNetworkId};
+    openNetwork(network);
+  }
 }
 
 function getCurrentNetwork(){
@@ -150,8 +155,23 @@ async function setupPingInterval(networkId){
  fetch('/api/settings').then(res=>res.json()).then(data=>{
    const interval=(parseInt(data.ping_interval)||60)*1000;
    
-   pingIntervalTimer=setInterval(()=>{
-     pingNetwork(networkId);
+   // Запускаем фоновый ping всех подсетей
+   pingIntervalTimer=setInterval(async ()=>{
+     // Получаем все подсети и пингуем каждую
+     const res=await fetch(API);
+     const networks=await res.json();
+     for(const net of networks){
+       try{
+         await fetch("/api/networks/"+net.id+"/ping",{method:"POST"});
+       }catch(e){
+         console.error("Error pinging network "+net.id,e);
+       }
+     }
+     // Если мы в режиме просмотра подсети - обновляем отображение
+     if(currentNetworkId){
+       const network={id:currentNetworkId};
+       openNetwork(network);
+     }
    },interval);
  });
 }
@@ -203,4 +223,3 @@ saveNetworkBtn.onclick=async()=>{
     alert('Ошибка сохранения');
  }
 };
-
