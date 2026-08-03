@@ -5,34 +5,28 @@
 # Logs and temp files
 *.log
 *.tmp
-*.swp
 
 # Environment
 .env
 .env.local
 .env.*
 
-# Editors
-.vscode/
-.idea/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
 # Dependencies
 node_modules/
 .venv/
 venv/
-pip-log.txt
-pipenv.lock
+__pycache__/
 
 # Build artifacts
 dist/
 build/
-*.egg-info/
+*.pyc
+*.o
+*.obj
+
+# Editors
+.vscode/
+.idea/
 
 # OS generated files
 .DS_Store
