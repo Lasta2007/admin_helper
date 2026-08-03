@@ -17,14 +17,19 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 .grid tbody tr.selected{background:#dbeafe}
 .hidden{display:none!important}
 .back{text-decoration:none;color:#1976d2;font-weight:600}
-.inlineHostname,.inlineComment{width:100%;border:1px solid transparent;padding:6px;border-radius:4px}
-.inlineHostname:focus,.inlineComment:focus{border-color:#90caf9;outline:none;background:#fff}
+.inlineHostname,.inlineComment,.inlineMac{width:100%;border:1px solid transparent;padding:6px;border-radius:4px}
+.inlineHostname:focus,.inlineComment:focus,.inlineMac:focus{border-color:#90caf9;outline:none;background:#fff}
 
 /* Status indicator */
 .status-dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;cursor:help}
 .status-online{background:#4caf50;box-shadow:0 0 6px #4caf50}
 .status-offline{background:#f44336;box-shadow:0 0 6px #f44336}
 .status-dot[title]:hover::after{content:attr(title);position:absolute;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;white-space:nowrap;z-index:1000;margin-left:-10px}
+
+/* Ping button in table */
+.ping-btn{padding:4px 10px;border:none;border-radius:4px;background:#1976d2;color:#fff;cursor:pointer;font-size:12px}
+.ping-btn:hover{background:#1565c0}
+.ping-btn:disabled{background:#bdbdbd;cursor:not-allowed}
 
 /* Settings form */
 .settings-form{background:#fff;padding:20px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.08);max-width:400px}
