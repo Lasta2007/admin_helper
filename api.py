@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import ipaddress
+import subprocess
+import asyncio
+from datetime import datetime
 
 from database import (
     get_networks,
@@ -10,6 +13,9 @@ from database import (
     delete_network,
     get_hosts,
     save_host,
+    get_all_settings,
+    set_setting,
+    update_online,
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -25,6 +31,10 @@ class HostUpdate(BaseModel):
     hostname: str = ""
     comment: str = ""
     online: int = 0
+
+
+class SettingsUpdate(BaseModel):
+    ping_interval: int
 
 
 def validate_cidr(cidr: str):
@@ -109,3 +119,62 @@ def api_update_host(ip: str, data: HostUpdate):
         online=data.online,
     )
     return {"status": "ok"}
+
+
+# ----------------------------------------------------
+# Settings API
+# ----------------------------------------------------
+
+@router.get("/settings")
+def api_get_settings():
+    return get_all_settings()
+
+
+@router.put("/settings")
+def api_update_settings(data: SettingsUpdate):
+    set_setting("ping_interval", str(data.ping_interval))
+    return {"status": "ok"}
+
+
+# ----------------------------------------------------
+# Ping functionality
+# ----------------------------------------------------
+
+async def ping_host(ip: str) -> bool:
+    """
+    Выполняет ping указанного хоста.
+    Возвращает True если хост доступен, иначе False.
+    """
+    try:
+        # Используем subprocess для выполнения ping команды
+        # -c 1: отправить 1 пакет
+        # -w 1: таймаут 1 секунда (Linux)
+        process = await asyncio.create_subprocess_exec(
+            "ping", "-c", "1", "-w", "1", ip,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        await process.wait()
+        return process.returncode == 0
+    except Exception:
+        return False
+
+
+@router.post("/networks/{network_id}/ping")
+async def api_ping_network(network_id: int):
+    """
+    Выполняет ping всех хостов в указанной подсети
+    и обновляет их статус доступности.
+    """
+    network = get_network(network_id)
+    if network is None:
+        raise HTTPException(status_code=404, detail="Подсеть не найдена")
+
+    hosts = get_hosts(network_id)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for host in hosts:
+        is_online = await ping_host(host["ip"])
+        update_online(network_id, host["ip"], 1 if is_online else 0, now)
+
+    return {"status": "ok", "pinged": len(hosts)}
