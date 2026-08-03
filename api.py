@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 import ipaddress
 import subprocess
@@ -251,10 +251,11 @@ async def api_ping_network(network_id: int):
 
 
 @router.post("/hosts/{ip}/ping")
-async def api_ping_single_host(ip: str, network_id: int):
+async def api_ping_single_host(ip: str, network_id: int = Query(...)):
     """
     Выполняет ping конкретного хоста и обновляет его статус, hostname и mac.
     Таймаут берется из настроек.
+    network_id передается как query-параметр
     """
     network = get_network(network_id)
     if network is None:
