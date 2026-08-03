@@ -10,6 +10,7 @@
 <div class="sidebar">
   <div class="logo">Admin Helper</div>
   <div class="nav-item active">IPAM</div>
+  <div class="nav-item settings-nav" id="settingsNav">Настройки</div>
 </div>
 
 <div class="main">
@@ -32,11 +33,25 @@
     <div class="header">
       <a id="backBtn" class="back" href="#">← Назад</a>
       <h2 id="networkTitle">Подсеть</h2>
+      <div class="toolbar">
+        <button id="pingBtn">Ping все</button>
+      </div>
     </div>
     <table class="grid">
-      <thead><tr><th>IP</th><th>Hostname</th><th>Комментарий</th></tr></thead>
+      <thead><tr><th>Status</th><th>IP</th><th>Hostname</th><th>Комментарий</th></tr></thead>
       <tbody id="hosts"></tbody>
     </table>
+  </div>
+
+  <div id="settingsView" class="hidden">
+    <div class="header">
+      <h2>Настройки</h2>
+    </div>
+    <div class="settings-form">
+      <label>Интервал проверки (секунды)</label>
+      <input id="pingIntervalInput" type="number" min="10" step="10">
+      <button id="saveSettingsBtn">Сохранить</button>
+    </div>
   </div>
 </div>
 

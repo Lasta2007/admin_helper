@@ -35,6 +35,13 @@ def init_db():
         UNIQUE(network_id, ip),
         FOREIGN KEY(network_id) REFERENCES networks(id)
     );
+
+    CREATE TABLE IF NOT EXISTS settings(
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    INSERT OR IGNORE INTO settings(key, value) VALUES('ping_interval', '60');
     """)
 
     conn.commit()
@@ -249,3 +256,50 @@ def update_online(network_id: int,
 
     conn.commit()
     conn.close()
+
+
+# ----------------------------------------------------
+# Settings
+# ----------------------------------------------------
+
+def get_setting(key: str, default: str = None):
+    conn = get_connection()
+
+    row = conn.execute("""
+        SELECT value
+        FROM settings
+        WHERE key=?
+    """, (key,)).fetchone()
+
+    conn.close()
+
+    if row is None:
+        return default
+
+    return row["value"]
+
+
+def set_setting(key: str, value: str):
+    conn = get_connection()
+
+    conn.execute("""
+        INSERT OR REPLACE INTO settings(key, value)
+        VALUES(?, ?)
+    """, (key, value))
+
+    conn.commit()
+    conn.close()
+
+
+def get_all_settings():
+    conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT key, value
+        FROM settings
+        ORDER BY key
+    """).fetchall()
+
+    conn.close()
+
+    return {row["key"]: row["value"] for row in rows}
