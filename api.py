@@ -3,6 +3,7 @@ import subprocess
 import socket
 import re
 import ipaddress
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -23,6 +24,14 @@ from database import (
     set_setting,
     update_online,
 )
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('admin_helper')
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -55,21 +64,28 @@ def validate_cidr(cidr: str):
 
 async def get_hostname(ip: str) -> str:
     """Получение hostname через reverse DNS lookup."""
+    logger.info(f"[get_hostname] Запрос hostname для IP: {ip}")
     try:
         hostname, _, _ = await asyncio.get_event_loop().run_in_executor(
             None, socket.gethostbyaddr, ip
         )
         # Возвращаем только короткое имя (до первой точки)
-        return hostname.split('.')[0]
-    except (socket.herror, socket.gaierror, Exception):
+        short_hostname = hostname.split('.')[0]
+        logger.info(f"[get_hostname] Для IP {ip} получен hostname: {short_hostname} (полный: {hostname})")
+        return short_hostname
+    except (socket.herror, socket.gaierror, Exception) as e:
         # Если reverse DNS не удался, возвращаем пустую строку
+        logger.warning(f"[get_hostname] Не удалось получить hostname для IP {ip}: {type(e).__name__}: {e}")
         return ""
 
 
 async def get_mac_address(ip: str) -> str:
     """Получение MAC адреса через ARP таблицу."""
+    logger.info(f"[get_mac_address] Запрос MAC адреса для IP: {ip}")
+    
     # Сначала делаем ping чтобы устройство появилось в ARP таблице
     try:
+        logger.debug(f"[get_mac_address] Выполнение ping для обновления ARP таблицы: {ip}")
         await asyncio.create_subprocess_exec(
             "ping", "-c", "1", "-W", "1", ip,
             stdout=subprocess.DEVNULL,
@@ -77,32 +93,38 @@ async def get_mac_address(ip: str) -> str:
         )
         # Небольшая задержка чтобы ARP таблица обновилась
         await asyncio.sleep(0.5)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[get_mac_address] Ошибка при выполнении ping для {ip}: {e}")
     
     try:
         # Попытка через команду ip neigh (более современная)
+        logger.debug(f"[get_mac_address] Попытка получения MAC через 'ip neigh': {ip}")
         result = await asyncio.create_subprocess_exec(
             "ip", "neigh", "show", ip,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
-        stdout, _ = await result.communicate()
+        stdout, stderr = await result.communicate()
         output = stdout.decode().strip()
+        logger.debug(f"[get_mac_address] Вывод 'ip neigh': {output}")
         
         # Парсинг вывода: "192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
         match = re.search(r'lladdr\s+([0-9a-fA-F:]{17})', output)
         if match:
-            return match.group(1).lower()
+            mac = match.group(1).lower()
+            logger.info(f"[get_mac_address] Для IP {ip} получен MAC через 'ip neigh': {mac}")
+            return mac
             
         # Попытка через команду arp (классическая)
+        logger.debug(f"[get_mac_address] Попытка получения MAC через 'arp -n': {ip}")
         result = await asyncio.create_subprocess_exec(
             "arp", "-n", ip,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
-        stdout, _ = await result.communicate()
+        stdout, stderr = await result.communicate()
         output = stdout.decode().strip()
+        logger.debug(f"[get_mac_address] Вывод 'arp -n': {output}")
         
         # Парсинг вывода arp: "192.168.1.1  0x1  ether  aa:bb:cc:dd:ee:ff  C  eth0"
         lines = output.split('\n')
@@ -111,9 +133,13 @@ async def get_mac_address(ip: str) -> str:
                 parts = line.split()
                 for part in parts:
                     if re.match(r'^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$', part):
-                        return part.lower()
-    except Exception:
-        pass
+                        mac = part.lower()
+                        logger.info(f"[get_mac_address] Для IP {ip} получен MAC через 'arp': {mac}")
+                        return mac
+        
+        logger.warning(f"[get_mac_address] Не удалось получить MAC адрес для IP {ip}: запись не найдена в ARP таблице")
+    except Exception as e:
+        logger.error(f"[get_mac_address] Ошибка при получении MAC адреса для IP {ip}: {type(e).__name__}: {e}")
     
     return ""
 
@@ -222,6 +248,7 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
     Возвращает кортеж (is_online, hostname, mac).
     timeout - таймаут в секундах (по умолчанию 3)
     """
+    logger.info(f"[ping_host] Начало пинга для IP: {ip}, таймаут: {timeout}с")
     try:
         # Используем subprocess для выполнения ping команды
         # -c 1: отправить 1 пакет
@@ -234,24 +261,40 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
         stdout, _ = await process.communicate()
         is_online = process.returncode == 0
         
+        logger.info(f"[ping_host] Результат пинга для {ip}: {'ONLINE' if is_online else 'OFFLINE'}")
+        
         hostname = ""
         mac = ""
         
         if is_online:
             # Получаем hostname через reverse DNS lookup с использованием socket
+            logger.info(f"[ping_host] Хост {ip} доступен, получение hostname...")
             try:
                 hostname = await get_hostname(ip)
-            except Exception:
-                pass
+                if hostname:
+                    logger.info(f"[ping_host] Для {ip} получен hostname: {hostname}")
+                else:
+                    logger.warning(f"[ping_host] Не удалось получить hostname для {ip}")
+            except Exception as e:
+                logger.error(f"[ping_host] Ошибка при получении hostname для {ip}: {type(e).__name__}: {e}")
             
             # Получаем MAC адрес через arp или ip neigh
+            logger.info(f"[ping_host] Хост {ip} доступен, получение MAC адреса...")
             try:
                 mac = await get_mac_address(ip)
-            except Exception:
-                pass
+                if mac:
+                    logger.info(f"[ping_host] Для {ip} получен MAC адрес: {mac}")
+                else:
+                    logger.warning(f"[ping_host] Не удалось получить MAC адрес для {ip}")
+            except Exception as e:
+                logger.error(f"[ping_host] Ошибка при получении MAC адреса для {ip}: {type(e).__name__}: {e}")
+        else:
+            logger.warning(f"[ping_host] Хост {ip} недоступен, получение hostname/mac пропущено")
         
+        logger.info(f"[ping_host] Завершение пинга для {ip}: online={is_online}, hostname='{hostname}', mac='{mac}'")
         return is_online, hostname, mac
-    except Exception:
+    except Exception as e:
+        logger.error(f"[ping_host] Критическая ошибка при пинге {ip}: {type(e).__name__}: {e}")
         return False, "", ""
 
 
@@ -260,17 +303,23 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
     Выполняет параллельный ping всех хостов в списке.
     """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(f"[ping_all_hosts_parallel] Начало параллельного пинга {len(hosts)} хостов для подсети ID={network_id}")
     
     async def ping_and_update(host):
-        is_online, hostname, mac = await ping_host(host["ip"], timeout)
+        ip = host["ip"]
+        logger.info(f"[ping_and_update] Обработка хоста {ip}...")
+        is_online, hostname, mac = await ping_host(ip, timeout)
         # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
         update_hostname = hostname if hostname else host.get("hostname", "")
         update_mac = mac if mac else host.get("mac", "")
+        logger.info(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
         update_online(network_id, host["ip"], 1 if is_online else 0, now, update_hostname, update_mac)
         return host["ip"], is_online
     
     tasks = [ping_and_update(host) for host in hosts]
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    success_count = sum(1 for r in results if isinstance(r, tuple) and len(r) == 2 and r[1])
+    logger.info(f"[ping_all_hosts_parallel] Завершение пинга: всего={len(hosts)}, успешно={success_count}")
     return results
 
 
@@ -281,15 +330,19 @@ async def api_ping_network(network_id: int):
     и обновляет их статус доступности, hostname и mac.
     Таймаут берется из настроек.
     """
+    logger.info(f"[api_ping_network] Запрос на пинг подсети ID={network_id}")
     network = get_network(network_id)
     if network is None:
+        logger.error(f"[api_ping_network] Подсеть ID={network_id} не найдена")
         raise HTTPException(status_code=404, detail="Подсеть не найдена")
 
     hosts = get_hosts(network_id)
     timeout = int(get_setting("ping_timeout", "3"))
     
+    logger.info(f"[api_ping_network] Пинг {len(hosts)} хостов в подсети {network['cidr']} с таймаутом {timeout}с")
     await ping_all_hosts_parallel(hosts, network_id, timeout)
 
+    logger.info(f"[api_ping_network] Пинг подсети ID={network_id} завершен")
     return {"status": "ok", "pinged": len(hosts)}
 
 
@@ -300,11 +353,14 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
     Таймаут берется из настроек.
     network_id передается как query-параметр
     """
+    logger.info(f"[api_ping_single_host] Запрос на пинг хоста {ip} (подсеть ID={network_id})")
     network = get_network(network_id)
     if network is None:
+        logger.error(f"[api_ping_single_host] Подсеть ID={network_id} не найдена")
         raise HTTPException(status_code=404, detail="Подсеть не найдена")
 
     timeout = int(get_setting("ping_timeout", "3"))
+    logger.info(f"[api_ping_single_host] Пинг хоста {ip} с таймаутом {timeout}с")
     is_online, hostname, mac = await ping_host(ip, timeout)
     
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -313,10 +369,14 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
     update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
     update_mac = mac if mac else (current_host["mac"] if current_host else "")
     
+    logger.info(f"[api_ping_single_host] Результат для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
+    
     # Если хост существует - обновляем, иначе создаем новую запись
     if current_host:
+        logger.info(f"[api_ping_single_host] Обновление существующей записи для {ip}")
         update_online(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac)
     else:
+        logger.info(f"[api_ping_single_host] Создание новой записи для {ip}")
         save_host(
             network_id=network_id,
             ip=ip,
@@ -326,6 +386,7 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
             mac=update_mac
         )
     
+    logger.info(f"[api_ping_single_host] Завершение обработки хоста {ip}")
     return {
         "status": "ok",
         "ip": ip,
