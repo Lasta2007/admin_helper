@@ -86,13 +86,18 @@ async def get_mac_address(ip: str) -> str:
     # Сначала делаем ping чтобы устройство появилось в ARP таблице
     try:
         logger.debug(f"[get_mac_address] Выполнение ping для обновления ARP таблицы: {ip}")
-        await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "1", ip,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+        process = await asyncio.create_subprocess_exec(
+            "ping", "-c", "1", "-W", "2", ip,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
         )
-        # Небольшая задержка чтобы ARP таблица обновилась
-        await asyncio.sleep(0.5)
+        stdout, stderr = await process.communicate()
+        if process.returncode == 0:
+            logger.debug(f"[get_mac_address] Ping успешен, STDOUT: {stdout.decode()[:200]}")
+        else:
+            logger.warning(f"[get_mac_address] Ping вернул код {process.returncode}, STDERR: {stderr.decode()[:200]}")
+        # Увеличенная задержка чтобы ARP таблица обновилась
+        await asyncio.sleep(1.0)
     except Exception as e:
         logger.warning(f"[get_mac_address] Ошибка при выполнении ping для {ip}: {e}")
     
@@ -106,7 +111,10 @@ async def get_mac_address(ip: str) -> str:
         )
         stdout, stderr = await result.communicate()
         output = stdout.decode().strip()
-        logger.debug(f"[get_mac_address] Вывод 'ip neigh': {output}")
+        err_output = stderr.decode().strip()
+        logger.debug(f"[get_mac_address] 'ip neigh' STDOUT: '{output}'")
+        if err_output:
+            logger.debug(f"[get_mac_address] 'ip neigh' STDERR: '{err_output}'")
         
         # Парсинг вывода: "192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE"
         match = re.search(r'lladdr\s+([0-9a-fA-F:]{17})', output)
@@ -114,28 +122,68 @@ async def get_mac_address(ip: str) -> str:
             mac = match.group(1).lower()
             logger.info(f"[get_mac_address] Для IP {ip} получен MAC через 'ip neigh': {mac}")
             return mac
-            
-        # Попытка через команду arp (классическая)
-        logger.debug(f"[get_mac_address] Попытка получения MAC через 'arp -n': {ip}")
-        result = await asyncio.create_subprocess_exec(
-            "arp", "-n", ip,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        stdout, stderr = await result.communicate()
-        output = stdout.decode().strip()
-        logger.debug(f"[get_mac_address] Вывод 'arp -n': {output}")
         
-        # Парсинг вывода arp: "192.168.1.1  0x1  ether  aa:bb:cc:dd:ee:ff  C  eth0"
-        lines = output.split('\n')
-        for line in lines:
-            if ip in line:
-                parts = line.split()
-                for part in parts:
-                    if re.match(r'^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$', part):
-                        mac = part.lower()
-                        logger.info(f"[get_mac_address] Для IP {ip} получен MAC через 'arp': {mac}")
-                        return mac
+        # Если lladdr не найден, проверяем статус записи
+        if "REACHABLE" in output or "STALE" in output or "DELAY" in output:
+            logger.debug(f"[get_mac_address] Запись в ARP таблице найдена, но MAC не указан в стандартном формате")
+            # Пробуем найти MAC в другом формате
+            mac_match = re.search(r'([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', output)
+            if mac_match:
+                mac = mac_match.group(1).lower()
+                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через альтернативный парсинг 'ip neigh': {mac}")
+                return mac
+        
+        # Попытка через чтение /proc/net/arp (прямой доступ к ARP таблице ядра)
+        logger.debug(f"[get_mac_address] Попытка получения MAC через /proc/net/arp: {ip}")
+        try:
+            with open('/proc/net/arp', 'r') as f:
+                arp_content = f.read()
+                logger.debug(f"[get_mac_address] Содержимое /proc/net/arp:\n{arp_content[:500]}")
+                lines = arp_content.strip().split('\n')[1:]  # Пропускаем заголовок
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[0] == ip:
+                        mac_candidate = parts[3]
+                        if mac_candidate != "00:00:00:00:00:00":
+                            mac = mac_candidate.lower()
+                            logger.info(f"[get_mac_address] Для IP {ip} получен MAC через /proc/net/arp: {mac}")
+                            return mac
+                        else:
+                            logger.debug(f"[get_mac_address] Запись для {ip} найдена, но MAC равен 00:00:00:00:00:00")
+        except FileNotFoundError:
+            logger.debug("[get_mac_address] Файл /proc/net/arp не найден")
+        except Exception as e:
+            logger.warning(f"[get_mac_address] Ошибка при чтении /proc/net/arp: {e}")
+        
+        # Попытка через команду arp (классическая) - только если команда доступна
+        try:
+            logger.debug(f"[get_mac_address] Попытка получения MAC через 'arp -n': {ip}")
+            result = await asyncio.create_subprocess_exec(
+                "arp", "-n", ip,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            output = stdout.decode().strip()
+            err_output = stderr.decode().strip()
+            logger.debug(f"[get_mac_address] 'arp -n' STDOUT: '{output}'")
+            if err_output:
+                logger.debug(f"[get_mac_address] 'arp -n' STDERR: '{err_output}'")
+            
+            # Парсинг вывода arp: "192.168.1.1  0x1  ether  aa:bb:cc:dd:ee:ff  C  eth0"
+            lines = output.split('\n')
+            for line in lines:
+                if ip in line:
+                    parts = line.split()
+                    for part in parts:
+                        if re.match(r'^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$', part):
+                            mac = part.lower()
+                            logger.info(f"[get_mac_address] Для IP {ip} получен MAC через 'arp': {mac}")
+                            return mac
+        except FileNotFoundError:
+            logger.debug("[get_mac_address] Команда 'arp' не найдена в системе")
+        except Exception as e:
+            logger.warning(f"[get_mac_address] Ошибка при выполнении команды 'arp': {e}")
         
         logger.warning(f"[get_mac_address] Не удалось получить MAC адрес для IP {ip}: запись не найдена в ARP таблице")
     except Exception as e:
