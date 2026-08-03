@@ -62,21 +62,121 @@ def validate_cidr(cidr: str):
         raise HTTPException(status_code=400, detail=f"Некорректная подсеть: {e}")
 
 
+async def get_netbios_name(ip: str, timeout: float = 1.0) -> str:
+    """Получение NetBIOS имени через UDP запрос на порт 137."""
+    logger.info(f"[get_netbios_name] Запрос NetBIOS имени для IP: {ip}")
+    try:
+        # NetBIOS Name Service query packet
+        # Запрос на получение имени узла (Node Status Request)
+        netbios_packet = bytes([
+            0x82, 0x54,  # Transaction ID
+            0x00, 0x00,  # Flags: Standard query
+            0x00, 0x01,  # Questions: 1
+            0x00, 0x00,  # Answer RRs: 0
+            0x00, 0x00,  # Authority RRs: 0
+            0x00, 0x00,  # Additional RRs: 0
+            0x20,        # Length of name
+            # Encoded name: CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (wildcard query)
+            0x43, 0x4b, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+            0x41, 0x41,  # Padding to 32 chars
+            0x00,        # Null terminator for name
+            0x00, 0x21,  # Type: NBSTAT (33)
+            0x00, 0x01,  # Class: IN
+        ])
+        
+        loop = asyncio.get_event_loop()
+        
+        def send_netbios_query():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            try:
+                sock.sendto(netbios_packet, (ip, 137))
+                data, _ = sock.recvfrom(1024)
+                return data
+            finally:
+                sock.close()
+        
+        response = await loop.run_in_executor(None, send_netbios_query)
+        
+        if len(response) < 57:
+            logger.warning(f"[get_netbios_name] Слишком короткий ответ от {ip}")
+            return ""
+        
+        # Парсим ответ: количество имен в байте 56
+        name_count = response[56]
+        logger.debug(f"[get_netbios_name] Получено имен от {ip}: {name_count}")
+        
+        offset = 57
+        netbios_name = ""
+        
+        for i in range(name_count):
+            if offset + 18 > len(response):
+                break
+            
+            # Имя занимает 15 байт, 16-й байт - тип
+            raw_name = response[offset:offset+15]
+            name_type = response[offset+15]
+            
+            # Декодируем имя (пробелы в конце обрезаем)
+            try:
+                decoded_name = raw_name.decode('ascii', errors='ignore').rstrip()
+            except Exception:
+                decoded_name = ""
+            
+            logger.debug(f"[get_netbios_name] Найдено имя: '{decoded_name}', тип: 0x{name_type:02X}")
+            
+            # Тип 0x00 - это уникальное имя узла (Workstation/Server name)
+            # Тип 0x20 - Server Service (также содержит имя компьютера)
+            if name_type in (0x00, 0x20) and decoded_name:
+                netbios_name = decoded_name
+                logger.info(f"[get_netbios_name] Для IP {ip} получено NetBIOS имя: {netbios_name} (тип: 0x{name_type:02X})")
+                break
+            
+            offset += 18
+        
+        if not netbios_name:
+            logger.warning(f"[get_netbios_name] Не удалось найти NetBIOS имя в ответе от {ip}")
+        
+        return netbios_name
+        
+    except socket.timeout:
+        logger.debug(f"[get_netbios_name] Таймаут при запросе NetBIOS для {ip}")
+        return ""
+    except Exception as e:
+        logger.warning(f"[get_netbios_name] Ошибка при получении NetBIOS имени для {ip}: {type(e).__name__}: {e}")
+        return ""
+
+
 async def get_hostname(ip: str) -> str:
-    """Получение hostname через reverse DNS lookup."""
+    """Получение hostname через reverse DNS lookup или NetBIOS."""
     logger.info(f"[get_hostname] Запрос hostname для IP: {ip}")
+    
+    # Попытка 1: Reverse DNS lookup
     try:
         hostname, _, _ = await asyncio.get_event_loop().run_in_executor(
             None, socket.gethostbyaddr, ip
         )
         # Возвращаем только короткое имя (до первой точки)
         short_hostname = hostname.split('.')[0]
-        logger.info(f"[get_hostname] Для IP {ip} получен hostname: {short_hostname} (полный: {hostname})")
+        logger.info(f"[get_hostname] Для IP {ip} получен hostname через DNS: {short_hostname} (полный: {hostname})")
         return short_hostname
-    except (socket.herror, socket.gaierror, Exception) as e:
-        # Если reverse DNS не удался, возвращаем пустую строку
-        logger.warning(f"[get_hostname] Не удалось получить hostname для IP {ip}: {type(e).__name__}: {e}")
-        return ""
+    except (socket.herror, socket.gaierror) as e:
+        logger.debug(f"[get_hostname] Reverse DNS не удался для {ip}: {type(e).__name__}: {e}")
+    except Exception as e:
+        logger.warning(f"[get_hostname] Ошибка reverse DNS для {ip}: {type(e).__name__}: {e}")
+    
+    # Попытка 2: NetBIOS query (для Windows машин в локальной сети)
+    logger.info(f"[get_hostname] Попытка получения NetBIOS имени для {ip}")
+    netbios_name = await get_netbios_name(ip, timeout=1.0)
+    if netbios_name:
+        logger.info(f"[get_hostname] Для IP {ip} получено NetBIOS имя: {netbios_name}")
+        return netbios_name
+    
+    logger.warning(f"[get_hostname] Не удалось получить hostname/NetBIOS для IP {ip}")
+    return ""
 
 
 async def get_mac_address(ip: str) -> str:
