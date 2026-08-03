@@ -1,6 +1,16 @@
 
 const API='/api/networks';
 let selected=null;
+let editNetworkId=null;
+
+// Получаем элементы модального окна
+const networkModal=document.getElementById('networkModal');
+const cidrInput=document.getElementById('cidrInput');
+const descInput=document.getElementById('descInput');
+const addBtn=document.getElementById('addBtn');
+const editBtn=document.getElementById('editBtn');
+const saveNetworkBtn=document.getElementById('saveNetworkBtn');
+const cancelNetworkBtn=document.getElementById('cancelNetworkBtn');
 
 async function load(){
  const res=await fetch(API);
@@ -61,9 +71,6 @@ document.getElementById("backBtn").onclick=(e)=>{
 
 load();
 
-
-
-let editNetworkId=null;
 function openNetworkModal(title,cidr='',desc=''){
  document.getElementById('modalTitle').textContent=title;
  cidrInput.value=cidr;
@@ -104,59 +111,3 @@ saveNetworkBtn.onclick=async()=>{
  }
 };
 
-
-// ===== PATCH =====
-window.addEventListener("DOMContentLoaded", () => {
-    const add=document.getElementById("addBtn");
-    const edit=document.getElementById("editBtn");
-    const save=document.getElementById("saveNetworkBtn");
-    const cancel=document.getElementById("cancelNetworkBtn");
-
-    if(add){
-        add.onclick=()=>openNetworkModal("Добавить подсеть");
-    }
-
-    if(edit){
-        edit.onclick=()=>{
-            if(!selected){
-                alert("Выберите подсеть");
-                return;
-            }
-            editNetworkId=selected.id;
-            openNetworkModal(
-                "Редактировать подсеть",
-                selected.cidr,
-                selected.description||""
-            );
-        };
-    }
-
-    if(save){
-        save.onclick=async()=>{
-            const body={
-                cidr:cidrInput.value.trim(),
-                description:descInput.value.trim()
-            };
-
-            const url=editNetworkId?API+"/"+editNetworkId:API;
-            const method=editNetworkId?"PUT":"POST";
-
-            const r=await fetch(url,{
-                method,
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify(body)
-            });
-
-            if(r.ok){
-                closeNetworkModal();
-                await load();
-            }else{
-                alert(await r.text());
-            }
-        };
-    }
-
-    if(cancel){
-        cancel.onclick=closeNetworkModal;
-    }
-});
