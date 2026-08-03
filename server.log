@@ -1,0 +1,48 @@
+INFO:     Started server process [408]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:49284 - "GET /api/networks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49286 - "GET /api/networks/1/hosts HTTP/1.1" 200 OK
+2026-08-03 12:04:19 - admin_helper - INFO - [api_ping_network] Запрос на пинг подсети ID=1
+2026-08-03 12:04:19 - admin_helper - INFO - [api_ping_network] Пинг 3 хостов в подсети 192.168.1.0/30 с таймаутом 3с
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_all_hosts_parallel] Начало параллельного пинга 3 хостов для подсети ID=1
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.1...
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.1, таймаут: 3с
+2026-08-03 12:04:19 - admin_helper - ERROR - [ping_host] Критическая ошибка при пинге 192.168.1.1: FileNotFoundError: [Errno 2] No such file or directory: 'ping'
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.1: online=False, hostname='test-host', mac='AA:BB:CC:DD:EE:FF'
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.100...
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.100, таймаут: 3с
+2026-08-03 12:04:19 - admin_helper - ERROR - [ping_host] Критическая ошибка при пинге 192.168.1.100: FileNotFoundError: [Errno 2] No such file or directory: 'ping'
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.100: online=False, hostname='test-host', mac=''
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.2...
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.2, таймаут: 3с
+2026-08-03 12:04:19 - admin_helper - ERROR - [ping_host] Критическая ошибка при пинге 192.168.1.2: FileNotFoundError: [Errno 2] No such file or directory: 'ping'
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.2: online=False, hostname='', mac=''
+2026-08-03 12:04:19 - admin_helper - INFO - [ping_all_hosts_parallel] Завершение пинга: всего=3, успешно=0
+2026-08-03 12:04:19 - admin_helper - INFO - [api_ping_network] Пинг подсети ID=1 завершен
+INFO:     127.0.0.1:49288 - "POST /api/networks/1/ping HTTP/1.1" 200 OK
+2026-08-03 12:04:49 - admin_helper - INFO - [api_ping_network] Запрос на пинг подсети ID=1
+2026-08-03 12:04:49 - admin_helper - INFO - [api_ping_network] Пинг 3 хостов в подсети 192.168.1.0/30 с таймаутом 3с
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_all_hosts_parallel] Начало параллельного пинга 3 хостов для подсети ID=1
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.1...
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.1, таймаут: 3с
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.100...
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.100, таймаут: 3с
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_and_update] Обработка хоста 192.168.1.2...
+2026-08-03 12:04:49 - admin_helper - INFO - [ping_host] Начало пинга для IP: 192.168.1.2, таймаут: 3с
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Результат пинга для 192.168.1.100: OFFLINE
+2026-08-03 12:04:52 - admin_helper - WARNING - [ping_host] Хост 192.168.1.100 недоступен, получение hostname/mac пропущено
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Завершение пинга для 192.168.1.100: online=False, hostname='', mac=''
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.100: online=False, hostname='test-host', mac=''
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Результат пинга для 192.168.1.1: OFFLINE
+2026-08-03 12:04:52 - admin_helper - WARNING - [ping_host] Хост 192.168.1.1 недоступен, получение hostname/mac пропущено
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Завершение пинга для 192.168.1.1: online=False, hostname='', mac=''
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.1: online=False, hostname='test-host', mac='AA:BB:CC:DD:EE:FF'
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Результат пинга для 192.168.1.2: OFFLINE
+2026-08-03 12:04:52 - admin_helper - WARNING - [ping_host] Хост 192.168.1.2 недоступен, получение hostname/mac пропущено
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_host] Завершение пинга для 192.168.1.2: online=False, hostname='', mac=''
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_and_update] Обновление БД для 192.168.1.2: online=False, hostname='', mac=''
+2026-08-03 12:04:52 - admin_helper - INFO - [ping_all_hosts_parallel] Завершение пинга: всего=3, успешно=0
+2026-08-03 12:04:52 - admin_helper - INFO - [api_ping_network] Пинг подсети ID=1 завершен
+INFO:     127.0.0.1:49296 - "POST /api/networks/1/ping HTTP/1.1" 200 OK
