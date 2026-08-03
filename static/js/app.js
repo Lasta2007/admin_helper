@@ -159,20 +159,16 @@ async function pingSingleHost(networkId, ip, rowElement){
   btn.disabled=true;
   
   try{
-    const timeout=parseInt(document.getElementById('pingTimeoutInput').value)||3;
-    await fetch("/api/networks/"+networkId+"/ping",{method:"POST"});
+    // Вызываем новый API для пинга конкретного хоста
+    const resp=await fetch("/api/hosts/"+encodeURIComponent(ip)+"/ping?network_id="+networkId,{method:"POST"});
+    const result=await resp.json();
     
-    // Обновляем только эту строку
-    const resp=await fetch("/api/networks/"+networkId+"/hosts");
-    const hosts=await resp.json();
-    const host=hosts.find(h=>h.ip===ip);
-    
-    if(host){
+    if(result.status==='ok'){
       const statusDot=rowElement.querySelector('.status-dot');
-      statusDot.className='status-dot '+(host.online?'status-online':'status-offline');
-      statusDot.title='Последняя проверка: '+(host.last_ping||'Никогда');
-      rowElement.querySelector('.inlineHostname').value=host.hostname||'';
-      rowElement.querySelector('.inlineMac').value=host.mac||'';
+      statusDot.className='status-dot '+(result.online?'status-online':'status-offline');
+      statusDot.title='Последняя проверка: '+new Date().toLocaleString();
+      rowElement.querySelector('.inlineHostname').value=result.hostname||'';
+      rowElement.querySelector('.inlineMac').value=result.mac||'';
     }
   }catch(e){
     console.error("Error pinging host",ip,e);
