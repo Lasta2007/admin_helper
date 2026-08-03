@@ -239,16 +239,40 @@ async def get_mac_address(ip: str) -> str:
                     logger.debug(f"[get_mac_address] SNMP walk результат: {snmp_output[:1000]}")
                     
                     # Ищем строку содержащую наш IP
-                    # Формат: SNMPv2-SMI::mib-2.4.22.1.2.X.X.X.X = STRING: aa:bb:cc:dd:ee:ff
+                    # Формат может быть разным:
+                    # 1) SNMPv2-SMI::mib-2.4.22.1.2.X.X.X.X = STRING: aa:bb:cc:dd:ee:ff
+                    # 2) iso.3.6.1.2.1.4.22.1.2.X.X.X.X = Hex-STRING: 00 20 6B FD D0 EA
                     for line in snmp_output.split('\n'):
                         if ip in line:
-                            # Извлекаем MAC адрес (последнее значение после =)
+                            logger.debug(f"[get_mac_address] Найдена строка SNMP для {ip}: {line}")
+                            
+                            # Попытка 1: MAC в формате aa:bb:cc:dd:ee:ff или aa-bb-cc-dd-ee-ff
                             match = re.search(r'=.*?([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
                             if match:
                                 mac = match.group(1).lower()
-                                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через SNMP: {mac}")
+                                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через SNMP (формат с разделителями): {mac}")
                                 return mac
-                    logger.warning(f"[get_mac_address] IP {ip} не найден в SNMP ответе от {gateway_ip}")
+                            
+                            # Попытка 2: MAC в формате Hex-STRING: 00 20 6B FD D0 EA
+                            hex_match = re.search(r'Hex-STRING:\s*([0-9a-fA-F]{2}\s+[0-9a-fA-F]{2}\s+[0-9a-fA-F]{2}\s+[0-9a-fA-F]{2}\s+[0-9a-fA-F]{2}\s+[0-9a-fA-F]{2})', line, re.IGNORECASE)
+                            if hex_match:
+                                hex_mac = hex_match.group(1)
+                                # Преобразуем "00 20 6B FD D0 EA" в "00:20:6b:fd:d0:ea"
+                                mac = ':'.join(hex_mac.split()).lower()
+                                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через SNMP (Hex-STRING): {mac}")
+                                return mac
+                            
+                            # Попытка 3: Универсальный поиск любой последовательности из 6 байт
+                            # Ищем 6 групп по 2 шестнадцатеричных цифры разделенных пробелами или другими символами
+                            universal_match = re.search(r'=.*?([0-9a-fA-F]{2})\s+([0-9a-fA-F]{2})\s+([0-9a-fA-F]{2})\s+([0-9a-fA-F]{2})\s+([0-9a-fA-F]{2})\s+([0-9a-fA-F]{2})(?!\s*[0-9a-fA-F]{2})', line)
+                            if universal_match:
+                                mac_bytes = [universal_match.group(i).lower() for i in range(1, 7)]
+                                mac = ':'.join(mac_bytes)
+                                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через SNMP (универсальный парсинг): {mac}")
+                                return mac
+                                
+                    logger.warning(f"[get_mac_address] IP {ip} не найден в SNMP ответе от {gateway_ip} или не удалось распарсить MAC")
+                    logger.debug(f"[get_mac_address] Полный SNMP вывод: {snmp_output[:2000]}")
                 else:
                     snmp_error = snmp_stderr.decode()
                     logger.warning(f"[get_mac_address] SNMP walk вернул ошибку: {snmp_error[:200]}")
