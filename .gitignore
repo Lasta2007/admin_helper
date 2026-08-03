@@ -5,6 +5,9 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Database
+*.db
+
 # Logs and temp files
 *.log
 *.tmp
@@ -17,6 +20,8 @@ __pycache__/
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Dependencies
 .venv/
@@ -29,11 +34,11 @@ build/
 target/
 
 # Coverage
-.coverage
 coverage/
 htmlcov/
+.coverage
 
-# Testing
-.pytest_cache/
+# Cache
 .mypy_cache/
+.pytest_cache/
 ```

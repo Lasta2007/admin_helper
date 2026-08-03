@@ -2,6 +2,8 @@ import asyncio
 import subprocess
 import socket
 import re
+import ipaddress
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
@@ -57,13 +59,27 @@ async def get_hostname(ip: str) -> str:
         hostname, _, _ = await asyncio.get_event_loop().run_in_executor(
             None, socket.gethostbyaddr, ip
         )
-        return hostname.split('.')[0]  # Возвращаем только короткое имя
+        # Возвращаем только короткое имя (до первой точки)
+        return hostname.split('.')[0]
     except (socket.herror, socket.gaierror, Exception):
+        # Если reverse DNS не удался, возвращаем пустую строку
         return ""
 
 
 async def get_mac_address(ip: str) -> str:
     """Получение MAC адреса через ARP таблицу."""
+    # Сначала делаем ping чтобы устройство появилось в ARP таблице
+    try:
+        await asyncio.create_subprocess_exec(
+            "ping", "-c", "1", "-W", "1", ip,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        # Небольшая задержка чтобы ARP таблица обновилась
+        await asyncio.sleep(0.5)
+    except Exception:
+        pass
+    
     try:
         # Попытка через команду ip neigh (более современная)
         result = await asyncio.create_subprocess_exec(
