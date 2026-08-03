@@ -80,7 +80,7 @@ async def get_hostname(ip: str) -> str:
 
 
 async def get_mac_address(ip: str) -> str:
-    """Получение MAC адреса через ARP таблицу."""
+    """Получение MAC адреса через ARP таблицу и SNMP."""
     logger.info(f"[get_mac_address] Запрос MAC адреса для IP: {ip}")
     
     # Сначала делаем ping чтобы устройство появилось в ARP таблице
@@ -184,6 +184,81 @@ async def get_mac_address(ip: str) -> str:
             logger.debug("[get_mac_address] Команда 'arp' не найдена в системе")
         except Exception as e:
             logger.warning(f"[get_mac_address] Ошибка при выполнении команды 'arp': {e}")
+        
+        # Попытка через SNMP (если предыдущие методы не сработали)
+        logger.info(f"[get_mac_address] Локальные методы не сработали, попытка получения MAC через SNMP для {ip}")
+        try:
+            # Определяем подсеть IP адреса для поиска шлюза
+            ip_obj = ipaddress.ip_address(ip)
+            # Получаем все подсети из БД чтобы найти подходящую
+            from database import get_networks
+            networks = get_networks()
+            gateway_ip = None
+            
+            for net in networks:
+                try:
+                    network = ipaddress.ip_network(net['cidr'], strict=False)
+                    if ip_obj in network:
+                        # Предполагаем что шлюз это первый адрес в подсети (обычно .1 или .254)
+                        # В реальном сценарии лучше хранить шлюз явно в БД
+                        # Здесь пытаемся найти шлюз перебором常见 вариантов
+                        possible_gateways = [
+                            str(network.network_address + 1),  # Первый хост
+                            str(network.broadcast_address - 1),  # Последний хост (часто .254)
+                        ]
+                        for gw in possible_gateways:
+                            # Проверяем доступен ли шлюз
+                            gw_process = await asyncio.create_subprocess_exec(
+                                "ping", "-c", "1", "-W", "1", gw,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE
+                            )
+                            gw_stdout, _ = await gw_process.communicate()
+                            if gw_process.returncode == 0:
+                                gateway_ip = gw
+                                logger.info(f"[get_mac_address] Найден шлюз {gateway_ip} для подсети {net['cidr']}")
+                                break
+                        if gateway_ip:
+                            break
+                except Exception as e:
+                    logger.debug(f"[get_mac_address] Ошибка при обработке подсети {net['cidr']}: {e}")
+                    continue
+            
+            if gateway_ip:
+                logger.info(f"[get_mac_address] Выполнение snmpwalk для шлюза {gateway_ip} и IP {ip}")
+                # Используем snmpwalk для получения MAC через таблицу ipNetToMediaPhysAddress (1.3.6.1.2.1.4.22.1.2)
+                snmp_process = await asyncio.create_subprocess_exec(
+                    "snmpwalk", "-v2c", "-c", "public", gateway_ip, "1.3.6.1.2.1.4.22.1.2",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                snmp_stdout, snmp_stderr = await snmp_process.communicate()
+                
+                if snmp_process.returncode == 0:
+                    snmp_output = snmp_stdout.decode()
+                    logger.debug(f"[get_mac_address] SNMP walk результат: {snmp_output[:1000]}")
+                    
+                    # Ищем строку содержащую наш IP
+                    # Формат: SNMPv2-SMI::mib-2.4.22.1.2.X.X.X.X = STRING: aa:bb:cc:dd:ee:ff
+                    for line in snmp_output.split('\n'):
+                        if ip in line:
+                            # Извлекаем MAC адрес (последнее значение после =)
+                            match = re.search(r'=.*?([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})', line)
+                            if match:
+                                mac = match.group(1).lower()
+                                logger.info(f"[get_mac_address] Для IP {ip} получен MAC через SNMP: {mac}")
+                                return mac
+                    logger.warning(f"[get_mac_address] IP {ip} не найден в SNMP ответе от {gateway_ip}")
+                else:
+                    snmp_error = snmp_stderr.decode()
+                    logger.warning(f"[get_mac_address] SNMP walk вернул ошибку: {snmp_error[:200]}")
+            else:
+                logger.warning(f"[get_mac_address] Не удалось определить шлюз для IP {ip}")
+                
+        except FileNotFoundError:
+            logger.debug("[get_mac_address] Команда 'snmpwalk' не найдена в системе")
+        except Exception as e:
+            logger.warning(f"[get_mac_address] Ошибка при выполнении SNMP запроса: {type(e).__name__}: {e}")
         
         logger.warning(f"[get_mac_address] Не удалось получить MAC адрес для IP {ip}: запись не найдена в ARP таблице")
     except Exception as e:
