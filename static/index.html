@@ -19,22 +19,25 @@
       <h2>Подсети</h2>
       <div class="toolbar">
         <button id="addBtn">Добавить</button>
-        <button id="editBtn">Редактировать</button>
-        <button id="deleteBtn" class="danger">Удалить</button>
       </div>
     </div>
     <table class="grid">
-      <thead><tr><th>Подсеть</th><th>Описание</th></tr></thead>
+      <thead><tr><th>Подсеть</th><th>Описание</th><th>Действия</th></tr></thead>
       <tbody id="networks"></tbody>
     </table>
   </div>
 
   <div id="hostView" class="hidden">
     <div class="header">
-      <a id="backBtn" class="back" href="#">← Назад</a>
+      <a id="backBtn" class="back" href="#">&larr; Назад</a>
       <h2 id="networkTitle">Подсеть</h2>
       <div class="toolbar">
         <span id="pingStatus" class="ping-status"></span>
+        <select id="hostFilter" class="filter-select">
+          <option value="all">Все хосты</option>
+          <option value="online">Доступны</option>
+          <option value="offline">Не доступны</option>
+        </select>
       </div>
     </div>
     <table class="grid">
@@ -45,7 +48,7 @@
 
   <div id="settingsView" class="hidden">
     <div class="header">
-      <a id="settingsBackBtn" class="back" href="#">← Назад</a>
+      <a id="settingsBackBtn" class="back" href="#">&larr; Назад</a>
       <h2>Настройки</h2>
     </div>
     <div class="settings-form">

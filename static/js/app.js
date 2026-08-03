@@ -1,27 +1,23 @@
-
 const API='/api/networks';
 let selected=null;
 let editNetworkId=null;
 let pingIntervalTimer=null;
 let currentNetworkId=null;
 let isPinging=false;
+let allHosts=[];
 
 // Получаем элементы модального окна
 const networkModal=document.getElementById('networkModal');
 const cidrInput=document.getElementById('cidrInput');
 const descInput=document.getElementById('descInput');
 const addBtn=document.getElementById('addBtn');
-const editBtn=document.getElementById('editBtn');
 const saveNetworkBtn=document.getElementById('saveNetworkBtn');
 const cancelNetworkBtn=document.getElementById('cancelNetworkBtn');
 
 // Навигация
 document.addEventListener('DOMContentLoaded', function() {
-  // Делаем левое меню полностью кликабельным
   document.getElementById('ipamNav').onclick=()=>showIPAM();
   document.getElementById('settingsNav').onclick=()=>showSettings();
-  
-  // Устанавливаем активный пункт по умолчанию
   document.getElementById('ipamNav').classList.add('active');
 });
 
@@ -42,10 +38,48 @@ async function load(){
  tb.innerHTML='';
  data.forEach(n=>{
    const tr=document.createElement('tr');
-   tr.innerHTML=`<td>${n.cidr}</td><td>${n.description}</td>`;
-   tr.onclick=()=>selected=n;
-   tr.ondblclick=()=>openNetwork(n);
+   tr.innerHTML=`<td>${n.cidr}</td><td>${n.description||''}</td>
+     <td class="actions-cell">
+       <button class="action-btn edit-btn" data-id="${n.id}" data-cidr="${n.cidr}" data-desc="${n.description||''}">✏️</button>
+       <button class="action-btn delete-btn" data-id="${n.id}">🗑️</button>
+     </td>`;
+   tr.onclick=(e)=>{
+     if(!e.target.classList.contains('action-btn')){
+       selected=n;
+       document.querySelectorAll('#networks tr').forEach(r=>r.classList.remove('selected'));
+       tr.classList.add('selected');
+     }
+   };
+   tr.ondblclick=(e)=>{
+     if(!e.target.classList.contains('action-btn')){
+       openNetwork(n);
+     }
+   };
    tb.appendChild(tr);
+ });
+ 
+ document.querySelectorAll('.edit-btn').forEach(btn=>{
+   btn.onclick=(e)=>{
+     e.stopPropagation();
+     const id=parseInt(e.target.dataset.id);
+     const cidr=e.target.dataset.cidr;
+     const desc=e.target.dataset.desc;
+     editNetworkId=id;
+     openNetworkModal('Редактировать подсеть',cidr,desc);
+   };
+ });
+ 
+ document.querySelectorAll('.delete-btn').forEach(btn=>{
+   btn.onclick=async(e)=>{
+     e.stopPropagation();
+     const id=parseInt(e.target.dataset.id);
+     const row=e.target.closest('tr');
+     const cidr=row.querySelector('td:first-child').textContent;
+     if(confirm(`Вы уверены, что хотите удалить подсеть ${cidr}?`)){
+       await fetch(API+'/'+id,{method:'DELETE'});
+       load();
+     }
+   };
  });
 }
 
@@ -100,19 +134,30 @@ async function openNetwork(network){
  document.getElementById("networkTitle").textContent="Подсеть "+network.cidr;
 
  const resp=await fetch("/api/networks/"+network.id+"/hosts");
- const hosts=await resp.json();
+ allHosts=await resp.json();
 
+ renderHosts(allHosts);
+
+ setupPingInterval(currentNetworkId);
+}
+
+function renderHosts(hosts){
  const tbody=document.getElementById("hosts");
  tbody.innerHTML="";
-
+ 
+ const filterValue=document.getElementById('hostFilter').value;
+ 
  hosts.forEach(host=>{
+   if(filterValue==='online' && !host.online) return;
+   if(filterValue==='offline' && host.online) return;
+   
    const tr=document.createElement("tr");
    const statusClass=host.online?'status-online':'status-offline';
    const lastPing=host.last_ping||'Никогда';
    const macDisplay=host.mac||'-';
    tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
    <td>${host.ip}</td>
-   <td><button class="ping-btn" data-ip="${host.ip}" data-network="${network.id}">Ping</button></td>
+   <td><button class="ping-btn" data-ip="${host.ip}" data-network="${currentNetworkId}">Ping</button></td>
    <td><input class="inlineHostname" value="${host.hostname||''}"></td>
    <td><input class="inlineMac" value="${macDisplay}" placeholder="AA:BB:CC:DD:EE:FF"></td>
    <td><input class="inlineComment" value="${host.comment||''}"></td>`;
@@ -122,7 +167,7 @@ async function openNetwork(network){
         method:"PUT",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          network_id:network.id,
+          network_id:currentNetworkId,
           hostname:tr.querySelector(".inlineHostname").value,
           comment:tr.querySelector(".inlineComment").value,
           online:host.online||0,
@@ -135,7 +180,6 @@ async function openNetwork(network){
    tr.querySelector(".inlineComment").onchange=save;
    tr.querySelector(".inlineMac").onchange=save;
    
-   // Обработчик кнопки Ping для конкретного IP
    tr.querySelector(".ping-btn").onclick=async(e)=>{
      const ip=e.target.dataset.ip;
      const netId=parseInt(e.target.dataset.network);
@@ -144,10 +188,11 @@ async function openNetwork(network){
 
    tbody.appendChild(tr);
  });
-
- // Запускаем периодический ping всех подсетей
- setupPingInterval(currentNetworkId);
 }
+
+document.getElementById('hostFilter').onchange=()=>{
+  renderHosts(allHosts);
+};
 
 async function pingSingleHost(networkId, ip, rowElement){
   if(isPinging)return;
@@ -159,7 +204,6 @@ async function pingSingleHost(networkId, ip, rowElement){
   btn.disabled=true;
   
   try{
-    // Вызываем новый API для пинга конкретного хоста
     const resp=await fetch("/api/hosts/"+encodeURIComponent(ip)+"/ping?network_id="+networkId,{method:"POST"});
     const result=await resp.json();
     
@@ -169,6 +213,14 @@ async function pingSingleHost(networkId, ip, rowElement){
       statusDot.title='Последняя проверка: '+new Date().toLocaleString();
       rowElement.querySelector('.inlineHostname').value=result.hostname||'';
       rowElement.querySelector('.inlineMac').value=result.mac||'';
+      
+      const hostIndex=allHosts.findIndex(h=>h.ip===ip);
+      if(hostIndex!==-1){
+        allHosts[hostIndex].online=result.online?1:0;
+        allHosts[hostIndex].hostname=result.hostname||'';
+        allHosts[hostIndex].mac=result.mac||'';
+        allHosts[hostIndex].last_ping=new Date().toLocaleString();
+      }
     }
   }catch(e){
     console.error("Error pinging host",ip,e);
@@ -181,7 +233,6 @@ async function pingSingleHost(networkId, ip, rowElement){
 
 async function pingNetwork(networkId){
   await fetch("/api/networks/"+networkId+"/ping",{method:"POST"});
-  // Обновляем отображение после пинга только для текущей подсети
   if(currentNetworkId===networkId){
     const network={id:currentNetworkId};
     openNetwork(network);
@@ -200,11 +251,9 @@ async function setupPingInterval(networkId){
  if(!networkId)return;
  
  fetch('/api/settings').then(res=>res.json()).then(data=>{
-   const interval=(parseInt(data.ping_interval)||60)*60*1000; // минуты в миллисекунды
+   const interval=(parseInt(data.ping_interval)||60)*60*1000;
    
-   // Запускаем фоновый ping всех подсетей
    pingIntervalTimer=setInterval(async ()=>{
-     // Получаем все подсети и пингуем каждую
      const res=await fetch(API);
      const networks=await res.json();
      for(const net of networks){
@@ -214,10 +263,10 @@ async function setupPingInterval(networkId){
          console.error("Error pinging network "+net.id,e);
        }
      }
-     // Если мы в режиме просмотра подсети - обновляем отображение
      if(currentNetworkId){
-       const network={id:currentNetworkId};
-       openNetwork(network);
+       const resp=await fetch("/api/networks/"+currentNetworkId+"/hosts");
+       allHosts=await resp.json();
+       renderHosts(allHosts);
      }
    },interval);
  });
@@ -236,12 +285,6 @@ function closeNetworkModal(){
  editNetworkId=null;
 }
 addBtn.onclick=()=>openNetworkModal('Добавить подсеть');
-
-editBtn.onclick=()=>{
- if(!selected){alert('Выберите подсеть');return;}
- editNetworkId=selected.id;
- openNetworkModal('Редактировать подсеть',selected.cidr,selected.description||'');
-};
 
 cancelNetworkBtn.onclick=closeNetworkModal;
 
@@ -264,4 +307,3 @@ saveNetworkBtn.onclick=async()=>{
     alert('Ошибка сохранения');
  }
 };
-
