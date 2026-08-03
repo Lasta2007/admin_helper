@@ -13,8 +13,10 @@ from database import (
     update_network,
     delete_network,
     get_hosts,
+    get_host,
     save_host,
     get_all_settings,
+    get_setting,
     set_setting,
     update_online,
 )
@@ -230,18 +232,49 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
 
 
 @router.post("/networks/{network_id}/ping")
-async def api_ping_network(network_id: int, timeout: int = 3):
+async def api_ping_network(network_id: int):
     """
     Выполняет параллельный ping всех хостов в указанной подсети
     и обновляет их статус доступности, hostname и mac.
-    timeout - таймаут для каждого ping запроса в секундах (по умолчанию 3)
+    Таймаут берется из настроек.
     """
     network = get_network(network_id)
     if network is None:
         raise HTTPException(status_code=404, detail="Подсеть не найдена")
 
     hosts = get_hosts(network_id)
+    timeout = int(get_setting("ping_timeout", "3"))
     
     await ping_all_hosts_parallel(hosts, network_id, timeout)
 
     return {"status": "ok", "pinged": len(hosts)}
+
+
+@router.post("/hosts/{ip}/ping")
+async def api_ping_single_host(ip: str, network_id: int):
+    """
+    Выполняет ping конкретного хоста и обновляет его статус, hostname и mac.
+    Таймаут берется из настроек.
+    """
+    network = get_network(network_id)
+    if network is None:
+        raise HTTPException(status_code=404, detail="Подсеть не найдена")
+
+    timeout = int(get_setting("ping_timeout", "3"))
+    is_online, hostname, mac = await ping_host(ip, timeout)
+    
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Получаем текущие значения hostname и mac, если не получили новые
+    current_host = get_host(network_id, ip)
+    update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
+    update_mac = mac if mac else (current_host["mac"] if current_host else "")
+    
+    update_online(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac)
+    
+    return {
+        "status": "ok",
+        "ip": ip,
+        "online": is_online,
+        "hostname": update_hostname,
+        "mac": update_mac
+    }

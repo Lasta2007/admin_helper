@@ -2,15 +2,21 @@
 # Database files
 *.db
 
+# Dependencies
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+
 # Environment
 .env
 .env.local
 .env.*
 
-# Dependencies
-.venv/
-venv/
-node_modules/
+# Editors
+.vscode/
+.idea/
 
 # Python
 __pycache__/
@@ -18,38 +24,7 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-*.so
-.coverage
-htmlcov/
-.coverage.*
-.python-version
-
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.swp
-*~
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.iml
-*.ipr
-*.iws
-
-# Build directories
-build/
-dist/
-*.egg-info/
+venv/
+.venv/
+.env
 ```
