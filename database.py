@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from datetime import datetime
 
 DB_PATH = Path(__file__).parent / "admin_helper.db"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -93,9 +94,20 @@ def add_network(cidr: str, description: str):
         VALUES(?, ?)
     """, (cidr, description))
 
-    conn.commit()
-
     network_id = cursor.lastrowid
+    
+    # Создаем записи для всех хостов в подсети
+    import ipaddress
+    net = ipaddress.ip_network(cidr, strict=False)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    for ip in net.hosts():
+        conn.execute("""
+            INSERT OR IGNORE INTO hosts(network_id, ip, hostname, comment, online, mac, last_ping)
+            VALUES(?, ?, '', '', 0, '', ?)
+        """, (network_id, str(ip), now))
+
+    conn.commit()
 
     conn.close()
 
@@ -104,7 +116,11 @@ def add_network(cidr: str, description: str):
 
 def update_network(network_id: int, cidr: str, description: str):
     conn = get_connection()
-
+    
+    # Получаем текущий CIDR для сравнения
+    current_network = get_network(network_id)
+    old_cidr = current_network["cidr"] if current_network else None
+    
     conn.execute("""
         UPDATE networks
         SET cidr=?,
@@ -115,6 +131,34 @@ def update_network(network_id: int, cidr: str, description: str):
         description,
         network_id
     ))
+    
+    # Если CIDR изменился, обновляем хосты
+    if old_cidr and old_cidr != cidr:
+        import ipaddress
+        
+        # Удаляем хосты, которые больше не входят в новую подсеть
+        old_net = ipaddress.ip_network(old_cidr, strict=False)
+        new_net = ipaddress.ip_network(cidr, strict=False)
+        
+        old_ips = set(str(ip) for ip in old_net.hosts())
+        new_ips = set(str(ip) for ip in new_net.hosts())
+        
+        # Удаляем хосты, которые были в старой подсети, но нет в новой
+        ips_to_remove = old_ips - new_ips
+        for ip in ips_to_remove:
+            conn.execute("""
+                DELETE FROM hosts
+                WHERE network_id=? AND ip=?
+            """, (network_id, ip))
+        
+        # Добавляем хосты, которые есть в новой подсети, но не было в старой
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ips_to_add = new_ips - old_ips
+        for ip in ips_to_add:
+            conn.execute("""
+                INSERT OR IGNORE INTO hosts(network_id, ip, hostname, comment, online, mac, last_ping)
+                VALUES(?, ?, '', '', 0, '', ?)
+            """, (network_id, ip, now))
 
     conn.commit()
     conn.close()
