@@ -182,7 +182,8 @@ def save_host(network_id: int,
               hostname: str,
               comment: str,
               online: int = 0,
-              mac: str = ''):
+              mac: str = '',
+              last_ping: str = None):
     """
     Создает запись, если её нет,
     либо обновляет существующую.
@@ -209,16 +210,18 @@ def save_host(network_id: int,
                 hostname,
                 comment,
                 online,
-                mac
+                mac,
+                last_ping
             )
-            VALUES(?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?)
         """, (
             network_id,
             ip,
             hostname,
             comment,
             online,
-            mac
+            mac,
+            last_ping
         ))
 
     else:
@@ -228,13 +231,15 @@ def save_host(network_id: int,
             SET hostname=?,
                 comment=?,
                 online=?,
-                mac=?
+                mac=?,
+                last_ping=?
             WHERE id=?
         """, (
             hostname,
             comment,
             online,
             mac,
+            last_ping,
             row["id"]
         ))
 

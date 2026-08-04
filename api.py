@@ -630,7 +630,8 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
                 hostname=update_hostname,
                 comment="",
                 online=1,
-                mac=update_mac
+                mac=update_mac,
+                last_ping=now
             )
         else:
             # Для недоступных хостов обновляем только если запись уже существует
@@ -711,7 +712,8 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
             hostname=update_hostname,
             comment="",
             online=1 if is_online else 0,
-            mac=update_mac
+            mac=update_mac,
+            last_ping=now
         )
     
     logger.info(f"[api_ping_single_host] Завершение обработки хоста {ip}")
