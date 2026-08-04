@@ -523,15 +523,34 @@ def api_get_hosts(network_id: int):
     for ip in net.hosts():
         ip_str = str(ip)
         if ip_str in stored:
-            result.append(stored[ip_str])
+            host = stored[ip_str]
+            # Объединяем scanned_hostname и hostname для отображения
+            # scanned_hostname показывается под IP мелким шрифтом
+            # hostname - это поле для ручного заполнения
+            result.append({
+                "id": host.get("id"),
+                "network_id": host.get("network_id", network_id),
+                "ip": ip_str,
+                "hostname": host.get("hostname", ""),  # Ручное поле
+                "scanned_hostname": host.get("scanned_hostname", ""),  # Сканированное поле
+                "comment": host.get("comment", ""),
+                "online": host.get("online", 0),
+                "mac": host.get("mac", ""),
+                "open_ports": host.get("open_ports", ""),
+                "last_ping": host.get("last_ping"),
+            })
         else:
             result.append({
                 "id": None,
                 "network_id": network_id,
                 "ip": ip_str,
                 "hostname": "",
+                "scanned_hostname": "",
                 "comment": "",
                 "online": 0,
+                "mac": "",
+                "open_ports": "",
+                "last_ping": None,
             })
     return result
 
@@ -725,34 +744,39 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
         is_online, hostname, mac, open_ports = await ping_host(ip, timeout)
         # Получаем текущие значения из БД для сохранения существующих hostname и mac
         current_host = get_host(network_id, ip)
-        # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
-        update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
+        # scanned_hostname - это hostname полученный при сканировании (DNS/NetBIOS)
+        # hostname - это поле для ручного заполнения пользователем
+        update_scanned_hostname = hostname if hostname else (current_host["scanned_hostname"] if current_host and "scanned_hostname" in current_host else "")
         update_mac = mac if mac else (current_host["mac"] if current_host else "")
         update_open_ports = open_ports if open_ports else (current_host.get("open_ports", "") if current_host else "")
-        logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
+        # Сохраняем ручной hostname без изменений
+        manual_hostname = current_host["hostname"] if current_host else ""
+        logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, scanned_hostname='{update_scanned_hostname}', manual_hostname='{manual_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
         # Если хост доступен - создаем/обновляем запись, если нет - только обновляем статус если запись существует
         if is_online:
             save_host_with_ports(
                 network_id=network_id,
                 ip=ip,
-                hostname=update_hostname,
+                hostname=manual_hostname,  # Сохраняем ручной hostname
                 comment="",
                 online=1,
                 mac=update_mac,
                 last_ping=now,
-                open_ports=update_open_ports
+                open_ports=update_open_ports,
+                scanned_hostname=update_scanned_hostname  # Сохраняем сканированный hostname
             )
         else:
             # Для недоступных хостов всегда создаем/обновляем запись, чтобы сохранить last_ping
             save_host_with_ports(
                 network_id=network_id,
                 ip=ip,
-                hostname=update_hostname,
+                hostname=manual_hostname,  # Сохраняем ручной hostname
                 comment="",
                 online=0,
                 mac=update_mac,
                 last_ping=now,
-                open_ports=update_open_ports
+                open_ports=update_open_ports,
+                scanned_hostname=update_scanned_hostname  # Сохраняем сканированный hostname
             )
         return host["ip"], is_online
     
@@ -794,7 +818,8 @@ async def api_ping_network(network_id: int):
 @router.post("/hosts/{ip}/ping")
 async def api_ping_single_host(ip: str, network_id: int = Query(...)):
     """
-    Выполняет ping конкретного хоста и обновляет его статус, hostname и mac.
+    Выполняет ping конкретного хоста и обновляет его статус, scanned_hostname (DNS/NetBIOS) и mac.
+    Поле hostname (ручное) не изменяется.
     Таймаут берется из настроек.
     network_id передается как query-параметр
     """
@@ -806,32 +831,36 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
 
     timeout = int(get_setting("ping_timeout", "3"))
     logger.info(f"[api_ping_single_host] Пинг хоста {ip} с таймаутом {timeout}с")
-    is_online, hostname, mac, open_ports = await ping_host(ip, timeout)
+    is_online, scanned_hostname, mac, open_ports = await ping_host(ip, timeout)
     
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Получаем текущие значения hostname и mac, если не получили новые
+    # Получаем текущие значения hostname (ручное) и mac, если не получили новые
     current_host = get_host(network_id, ip)
-    update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
+    # scanned_hostname - это hostname полученный при сканировании (DNS/NetBIOS)
+    update_scanned_hostname = scanned_hostname if scanned_hostname else (current_host["scanned_hostname"] if current_host and "scanned_hostname" in current_host else "")
     update_mac = mac if mac else (current_host["mac"] if current_host else "")
     update_open_ports = open_ports if open_ports else (current_host.get("open_ports", "") if current_host else "")
+    # Сохраняем ручной hostname без изменений
+    manual_hostname = current_host["hostname"] if current_host else ""
     
-    logger.info(f"[api_ping_single_host] Результат для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
+    logger.info(f"[api_ping_single_host] Результат для {ip}: online={is_online}, scanned_hostname='{update_scanned_hostname}', manual_hostname='{manual_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
     
     # Если хост существует - обновляем, иначе создаем новую запись
     if current_host:
         logger.info(f"[api_ping_single_host] Обновление существующей записи для {ip}")
-        update_online_with_ports(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac, update_open_ports)
+        update_online_with_ports(network_id, ip, 1 if is_online else 0, now, manual_hostname, update_mac, update_open_ports, update_scanned_hostname)
     else:
         logger.info(f"[api_ping_single_host] Создание новой записи для {ip}")
         save_host_with_ports(
             network_id=network_id,
             ip=ip,
-            hostname=update_hostname,
+            hostname=manual_hostname,  # Ручное поле hostname
             comment="",
             online=1 if is_online else 0,
             mac=update_mac,
             last_ping=now,
-            open_ports=update_open_ports
+            open_ports=update_open_ports,
+            scanned_hostname=update_scanned_hostname  # Сканированный hostname
         )
     
     logger.info(f"[api_ping_single_host] Завершение обработки хоста {ip}")
@@ -839,7 +868,8 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
         "status": "ok",
         "ip": ip,
         "online": is_online,
-        "hostname": update_hostname,
+        "scanned_hostname": update_scanned_hostname,
+        "manual_hostname": manual_hostname,
         "mac": update_mac,
         "open_ports": update_open_ports
     }

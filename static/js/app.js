@@ -162,8 +162,8 @@ function renderHosts(hosts){
    if(filterValue==='online' && !host.online) return;
    if(filterValue==='offline' && host.online) return;
    
-   // Глобальный поиск по всем полям
-   const searchStr=`${host.ip} ${host.hostname||''} ${host.comment||''} ${host.mac||''} ${host.open_ports||''}`.toLowerCase();
+   // Глобальный поиск по всем полям (IP, hostname ручной, scanned_hostname, comment, mac, ports)
+   const searchStr=`${host.ip} ${host.hostname||''} ${host.scanned_hostname||''} ${host.comment||''} ${host.mac||''} ${host.open_ports||''}`.toLowerCase();
    if(searchTerm && !searchStr.includes(searchTerm)) return;
    
    const tr=document.createElement("tr");
@@ -172,9 +172,9 @@ function renderHosts(hosts){
    const macDisplay=host.mac||'-';
    const portsDisplay=host.open_ports||'-';
    tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
-   <td>${host.ip}</td>
+   <td>${host.scanned_hostname ? `<div>${host.ip}<div class="scanned-hostname">${host.scanned_hostname}</div></div>` : host.ip}</td>
    <td><button class="ping-btn" data-ip="${host.ip}" data-network="${currentNetworkId}">Ping</button></td>
-   <td><input class="inlineHostname" value="${host.hostname||''}"></td>
+   <td><input class="inlineHostname" value="${host.hostname||''}" placeholder="Вручную"></td>
    <td class="ports-cell">${portsDisplay}</td>
    <td><input class="inlineMac" value="${macDisplay}" placeholder="AA:BB:CC:DD:EE:FF"></td>
    <td><input class="inlineComment" value="${host.comment||''}"></td>`;
@@ -234,13 +234,14 @@ async function pingSingleHost(networkId, ip, rowElement){
       const statusDot=rowElement.querySelector('.status-dot');
       statusDot.className='status-dot '+(result.online?'status-online':'status-offline');
       statusDot.title='Последняя проверка: '+new Date().toLocaleString();
-      rowElement.querySelector('.inlineHostname').value=result.hostname||'';
+      rowElement.querySelector('.inlineHostname').value=result.manual_hostname||'';
       rowElement.querySelector('.inlineMac').value=result.mac||'';
       
       const hostIndex=allHosts.findIndex(h=>h.ip===ip);
       if(hostIndex!==-1){
         allHosts[hostIndex].online=result.online?1:0;
-        allHosts[hostIndex].hostname=result.hostname||'';
+        allHosts[hostIndex].hostname=result.manual_hostname||'';
+        allHosts[hostIndex].scanned_hostname=result.scanned_hostname||'';
         allHosts[hostIndex].mac=result.mac||'';
         allHosts[hostIndex].open_ports=result.open_ports||'';
         allHosts[hostIndex].last_ping=new Date().toLocaleString();

@@ -66,3 +66,6 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 
 /* Hostname display - smaller font under IP */
 .inlineHostname{font-size:11px;color:#666}
+
+/* Scanned hostname displayed under IP address */
+.scanned-hostname{font-size:11px;color:#666;margin-top:2px}
