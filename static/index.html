@@ -83,6 +83,7 @@
       <h2>Настройки</h2>
     </div>
     <div class="settings-form">
+      <h3>IPAM настройки</h3>
       <label>Интервал проверки (минуты)</label>
       <input id="pingIntervalInput" type="number" min="1" step="1">
       <label>Таймаут ping (секунды)</label>
@@ -90,7 +91,18 @@
       <label><input type="checkbox" id="portScanEnabledCheckbox"> Сканирование портов</label>
       <label>Интервал сканирования портов (минуты)</label>
       <input id="portScanIntervalInput" type="number" min="60" step="60">
-      <button id="saveSettingsBtn">Сохранить</button>
+      
+      <h3>WORK PC настройки</h3>
+      <label>Путь к файлу log.txt</label>
+      <div style="display: flex; gap: 10px;">
+        <input id="workPcLogPathInput" type="text" style="flex: 1;">
+        <button id="saveWorkPcLogPathBtn">Установить</button>
+      </div>
+      <label>Период обновления данных (минуты)</label>
+      <input id="workPcUpdateIntervalInput" type="number" min="1" step="1">
+      <button id="saveWorkPcSettingsBtn">Сохранить настройки WORK PC</button>
+      
+      <button id="saveSettingsBtn" style="margin-top: 20px;">Сохранить настройки IPAM</button>
     </div>
   </div>
 </div>
