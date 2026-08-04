@@ -18,11 +18,17 @@ const cancelNetworkBtn=document.getElementById('cancelNetworkBtn');
 // Навигация
 document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('ipamNav').onclick=()=>showIPAM();
+  document.getElementById('workPcNav').onclick=()=>showWorkPc();
   document.getElementById('settingsNav').onclick=()=>showSettings();
   document.getElementById('ipamNav').classList.add('active');
 });
 
 document.getElementById('backBtn').onclick=(e)=>{
+ e.preventDefault();
+ showIPAM();
+};
+
+document.getElementById('workPcBackBtn').onclick=(e)=>{
  e.preventDefault();
  showIPAM();
 };
@@ -90,6 +96,20 @@ function showIPAM(){
  document.getElementById("netView").classList.remove("hidden");
  document.getElementById("hostView").classList.add("hidden");
  document.getElementById("settingsView").classList.add("hidden");
+ if(pingIntervalTimer){
+   clearInterval(pingIntervalTimer);
+   pingIntervalTimer=null;
+ }
+}
+
+function showWorkPc(){
+ document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
+ document.getElementById('workPcNav').classList.add('active');
+ document.getElementById("netView").classList.add("hidden");
+ document.getElementById("hostView").classList.add("hidden");
+ document.getElementById("settingsView").classList.add("hidden");
+ document.getElementById("workPcView").classList.remove("hidden");
+ loadWorkPcData();
  if(pingIntervalTimer){
    clearInterval(pingIntervalTimer);
    pingIntervalTimer=null;
@@ -337,4 +357,71 @@ saveNetworkBtn.onclick=async()=>{
  }else{
     alert('Ошибка сохранения');
  }
+};
+
+// WORK PC модуль
+let allWorkPcData=[];
+
+async function loadWorkPcData(){
+  try{
+    const res=await fetch('/api/work_pc');
+    if(!res.ok){
+      console.error('Ошибка загрузки данных WORK PC:', res.status);
+      return;
+    }
+    const result=await res.json();
+    allWorkPcData=result.data||[];
+    renderWorkPcTable(allWorkPcData);
+  }catch(e){
+    console.error('Ошибка при загрузке WORK PC:', e);
+  }
+}
+
+function renderWorkPcTable(data){
+  const tbody=document.getElementById('workPcTable');
+  tbody.innerHTML='';
+  
+  const searchTerm=document.getElementById('workPcSearch').value.toLowerCase();
+  
+  data.forEach(pc=>{
+    // Поиск по всем полям
+    const searchStr=`${pc.computer_name||''} ${pc.username||''} ${pc.ip_address||''} ${pc.mac_address||''} ${pc.os_version||''}`.toLowerCase();
+    if(searchTerm && !searchStr.includes(searchTerm)) return;
+    
+    const tr=document.createElement('tr');
+    tr.innerHTML=`
+      <td>${pc.date||'-'}</td>
+      <td>${pc.computer_name||'-'}</td>
+      <td>${pc.username||'-'}</td>
+      <td>${pc.ip_address||'-'}</td>
+      <td>${pc.mac_address||'-'}</td>
+      <td>${pc.os_version||'-'}</td>
+      <td>${pc.r7_version||'-'}</td>
+      <td>${pc.kav_version||'-'}</td>
+      <td>${pc.csp_version||'-'}</td>
+      <td>${pc.cpu||'-'}</td>
+      <td>${pc.hdd_free||'-'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById('workPcSearch').oninput=()=>{
+  renderWorkPcTable(allWorkPcData);
+};
+
+document.getElementById('refreshWorkPcBtn').onclick=async()=>{
+  try{
+    const res=await fetch('/api/work_pc/refresh', {method:'POST'});
+    const result=await res.json();
+    if(result.status==='ok' || result.status==='warning'){
+      alert(`Данные обновлены. Записей: ${result.records_count||0}`);
+      loadWorkPcData();
+    }else{
+      alert('Ошибка обновления: '+ (result.message||'Неизвестная ошибка'));
+    }
+  }catch(e){
+    console.error('Ошибка при обновлении WORK PC:', e);
+    alert('Ошибка при обновлении данных');
+  }
 };
