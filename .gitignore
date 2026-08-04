@@ -10,26 +10,22 @@ __pycache__/
 *.sqlite
 *.sqlite3
 
-# Logs
-*.log
-
-# Environment
+# Dependencies
+venv/
+.venv/
 .env
 .env.local
 *.env.*
 
-# Dependencies
-.venv/
-venv/
-pip-log.txt
-pip-selfcheck.json
+# Logs and temp files
+*.log
+*.tmp
 
-# OS generated files
+# Editors
+.vscode/
+.idea/
+
+# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 ```

@@ -46,20 +46,26 @@ def migrate_db():
             network_id INTEGER NOT NULL,
             ip TEXT NOT NULL,
             hostname TEXT DEFAULT '',
+            scanned_hostname TEXT DEFAULT '',
             comment TEXT DEFAULT '',
             online INTEGER DEFAULT 0,
             mac TEXT DEFAULT '',
             last_ping TEXT,
+            open_ports TEXT DEFAULT '',
             UNIQUE(network_id, ip),
             FOREIGN KEY(network_id) REFERENCES networks(id)
         )
         """)
         logger.info("[migrate_db] Таблица 'hosts' создана")
     
-    # Проверяем наличие колонки open_ports в таблице hosts
+    # Проверяем наличие колонки scanned_hostname в таблице hosts
     if 'hosts' in table_names:
         columns = cursor.execute("PRAGMA table_info(hosts)").fetchall()
         column_names = [c['name'] for c in columns]
+        
+        if 'scanned_hostname' not in column_names:
+            cursor.execute("ALTER TABLE hosts ADD COLUMN scanned_hostname TEXT DEFAULT ''")
+            logger.info("[migrate_db] Добавлена колонка 'scanned_hostname' в таблицу 'hosts'")
         
         if 'open_ports' not in column_names:
             cursor.execute("ALTER TABLE hosts ADD COLUMN open_ports TEXT DEFAULT ''")
@@ -375,10 +381,11 @@ def save_host_with_ports(network_id: int,
               online: int = 0,
               mac: str = '',
               last_ping: str = None,
-              open_ports: str = ''):
+              open_ports: str = '',
+              scanned_hostname: str = ''):
     """
     Создает запись, если её нет,
-    либо обновляет существующую (с поддержкой open_ports).
+    либо обновляет существующую (с поддержкой open_ports и scanned_hostname).
     """
 
     conn = get_connection()
@@ -404,9 +411,10 @@ def save_host_with_ports(network_id: int,
                 online,
                 mac,
                 last_ping,
-                open_ports
+                open_ports,
+                scanned_hostname
             )
-            VALUES(?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?)
         """, (
             network_id,
             ip,
@@ -415,7 +423,8 @@ def save_host_with_ports(network_id: int,
             online,
             mac,
             last_ping,
-            open_ports
+            open_ports,
+            scanned_hostname
         ))
 
     else:
@@ -427,7 +436,8 @@ def save_host_with_ports(network_id: int,
                 online=?,
                 mac=?,
                 last_ping=?,
-                open_ports=?
+                open_ports=?,
+                scanned_hostname=?
             WHERE id=?
         """, (
             hostname,
@@ -436,6 +446,7 @@ def save_host_with_ports(network_id: int,
             mac,
             last_ping,
             open_ports,
+            scanned_hostname,
             row["id"]
         ))
 
@@ -449,7 +460,8 @@ def update_online_with_ports(network_id: int,
                   last_ping: str,
                   hostname: str = '',
                   mac: str = '',
-                  open_ports: str = ''):
+                  open_ports: str = '',
+                  scanned_hostname: str = ''):
     conn = get_connection()
 
     conn.execute("""
@@ -458,7 +470,8 @@ def update_online_with_ports(network_id: int,
             last_ping=?,
             hostname=?,
             mac=?,
-            open_ports=?
+            open_ports=?,
+            scanned_hostname=?
         WHERE network_id=?
           AND ip=?
     """, (
@@ -467,6 +480,7 @@ def update_online_with_ports(network_id: int,
         hostname,
         mac,
         open_ports,
+        scanned_hostname,
         network_id,
         ip
     ))
