@@ -87,12 +87,35 @@ def migrate_db():
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_enabled', '0')")
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_interval', '1440')")
     
+    # Создаем таблицу work_pc если не существует (модуль WORK PC)
+    if 'work_pc' not in table_names:
+        cursor.execute("""
+        CREATE TABLE work_pc(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT DEFAULT '',
+            os_version TEXT DEFAULT '',
+            kernel_version TEXT DEFAULT '',
+            computer_name TEXT DEFAULT '',
+            username TEXT DEFAULT '',
+            ip_type TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            mac_address TEXT DEFAULT '',
+            motherboard TEXT DEFAULT '',
+            hdd_free TEXT DEFAULT '',
+            swap TEXT DEFAULT '',
+            cpu TEXT DEFAULT '',
+            disk_type TEXT DEFAULT '',
+            r7_version TEXT DEFAULT '',
+            kav_version TEXT DEFAULT '',
+            csp_version TEXT DEFAULT '',
+            created_at TEXT DEFAULT ''
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'work_pc' создана")
+    
     conn.commit()
     conn.close()
     logger.info("[migrate_db] Миграция базы данных завершена")
-    
-    # Инициализируем таблицу work_pc
-    init_work_pc_table_from_db()
 
 
 # Импортируем logger после определения функций чтобы избежать циклического импорта
@@ -106,15 +129,6 @@ def init_db():
     Теперь используется migrate_db().
     """
     migrate_db()
-
-
-def init_work_pc_table_from_db():
-    """
-    Инициализирует таблицу work_pc при миграции БД.
-    Вызывается из migrate_db после создания основных таблиц.
-    """
-    from work_pc import init_work_pc_table as init_work_pc
-    init_work_pc()
 
 
 # ----------------------------------------------------
