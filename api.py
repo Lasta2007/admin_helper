@@ -636,9 +636,16 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
                 last_ping=now
             )
         else:
-            # Для недоступных хостов обновляем только если запись уже существует
-            if current_host:
-                update_online(network_id, ip, 0, now, update_hostname, update_mac)
+            # Для недоступных хостов всегда создаем/обновляем запись, чтобы сохранить last_ping
+            save_host(
+                network_id=network_id,
+                ip=ip,
+                hostname=update_hostname,
+                comment="",
+                online=0,
+                mac=update_mac,
+                last_ping=now
+            )
         return host["ip"], is_online
     
     # Используем gather для параллельного выполнения с ограничением через семафор
