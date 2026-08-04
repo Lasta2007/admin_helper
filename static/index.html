@@ -33,6 +33,7 @@
       <h2 id="networkTitle">Подсеть</h2>
       <div class="toolbar">
         <span id="pingStatus" class="ping-status"></span>
+        <input type="text" id="globalSearch" class="search-input" placeholder="Поиск по всем полям...">
         <select id="hostFilter" class="filter-select">
           <option value="all">Все хосты</option>
           <option value="online">Доступны</option>
@@ -41,7 +42,7 @@
       </div>
     </div>
     <table class="grid">
-      <thead><tr><th>Status</th><th>IP</th><th>Ping</th><th>Hostname</th><th>MAC</th><th>Комментарий</th></tr></thead>
+      <thead><tr><th>Status</th><th>IP</th><th>Ping</th><th>Hostname</th><th>Порты</th><th>MAC</th><th>Комментарий</th></tr></thead>
       <tbody id="hosts"></tbody>
     </table>
   </div>
@@ -56,6 +57,9 @@
       <input id="pingIntervalInput" type="number" min="1" step="1">
       <label>Таймаут ping (секунды)</label>
       <input id="pingTimeoutInput" type="number" min="1" step="1">
+      <label><input type="checkbox" id="portScanEnabledCheckbox"> Сканирование портов</label>
+      <label>Интервал сканирования портов (минуты)</label>
+      <input id="portScanIntervalInput" type="number" min="60" step="60">
       <button id="saveSettingsBtn">Сохранить</button>
     </div>
   </div>

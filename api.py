@@ -24,6 +24,9 @@ from database import (
     get_setting,
     set_setting,
     update_online,
+    migrate_db,
+    save_host_with_ports,
+    update_online_with_ports,
 )
 
 # Настройка логирования
@@ -45,6 +48,26 @@ hostname_cache = {}
 hostname_cache_time = {}
 HOSTNAME_CACHE_TTL = 300  # секунд
 
+# Кэш для сканирования портов (TTL 1 час)
+port_scan_cache = {}
+port_scan_cache_time = {}
+PORT_SCAN_CACHE_TTL = 3600  # секунд
+
+# Известные порты для сканирования
+KNOWN_PORTS = {
+    21: 'FTP',
+    22: 'SSH',
+    53: 'DNS',
+    80: 'HTTP',
+    443: 'HTTPS',
+    3306: 'MySQL',
+    3389: 'RDP',
+    5432: 'PostgreSQL',
+    6379: 'Redis',
+    8080: 'HTTP-Alt',
+    27017: 'MongoDB',
+}
+
 
 class NetworkIn(BaseModel):
     cidr: str
@@ -62,6 +85,8 @@ class HostUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     ping_interval: int
     ping_timeout: int = 3
+    port_scan_enabled: int = 0
+    port_scan_interval: int = 1440
 
 
 def validate_cidr(cidr: str):
@@ -537,6 +562,11 @@ def api_get_settings():
 def api_update_settings(data: SettingsUpdate):
     set_setting("ping_interval", str(data.ping_interval))
     set_setting("ping_timeout", str(data.ping_timeout))
+    # Обновляем настройки сканирования портов если они переданы
+    if hasattr(data, 'port_scan_enabled') and data.port_scan_enabled is not None:
+        set_setting("port_scan_enabled", str(data.port_scan_enabled))
+    if hasattr(data, 'port_scan_interval') and data.port_scan_interval is not None:
+        set_setting("port_scan_interval", str(data.port_scan_interval))
     return {"status": "ok"}
 
 
@@ -544,10 +574,10 @@ def api_update_settings(data: SettingsUpdate):
 # Ping functionality
 # ----------------------------------------------------
 
-async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
+async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str, str]:
     """
-    Выполняет ping указанного хоста и получает hostname/mac.
-    Возвращает кортеж (is_online, hostname, mac).
+    Выполняет ping указанного хоста и получает hostname/mac/open_ports.
+    Возвращает кортеж (is_online, hostname, mac, open_ports).
     timeout - таймаут в секундах (по умолчанию 3)
     Использует семафор для ограничения параллелизма.
     """
@@ -571,6 +601,7 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
             
             hostname = ""
             mac = ""
+            open_ports = ""
             
             if is_online:
                 # Получаем hostname через reverse DNS lookup с использованием socket
@@ -594,14 +625,88 @@ async def ping_host(ip: str, timeout: int = 3) -> tuple[bool, str, str]:
                         logger.warning(f"[ping_host] Не удалось получить MAC адрес для {ip}")
                 except Exception as e:
                     logger.error(f"[ping_host] Ошибка при получении MAC адреса для {ip}: {type(e).__name__}: {e}")
+                
+                # Сканируем открытые порты если включено в настройках
+                port_scan_enabled = get_setting("port_scan_enabled", "0") == "1"
+                if port_scan_enabled:
+                    logger.info(f"[ping_host] Хост {ip} доступен, сканирование портов...")
+                    try:
+                        open_ports = await scan_ports(ip)
+                        if open_ports:
+                            logger.info(f"[ping_host] Для {ip} найдены открытые порты: {open_ports}")
+                        else:
+                            logger.debug(f"[ping_host] Для {ip} открытых портов не найдено")
+                    except Exception as e:
+                        logger.error(f"[ping_host] Ошибка при сканировании портов для {ip}: {type(e).__name__}: {e}")
             else:
-                logger.warning(f"[ping_host] Хост {ip} недоступен, получение hostname/mac пропущено")
+                logger.warning(f"[ping_host] Хост {ip} недоступен, получение hostname/mac/ports пропущено")
             
-            logger.info(f"[ping_host] Завершение пинга для {ip}: online={is_online}, hostname='{hostname}', mac='{mac}'")
-            return is_online, hostname, mac
+            logger.info(f"[ping_host] Завершение пинга для {ip}: online={is_online}, hostname='{hostname}', mac='{mac}', ports='{open_ports}'")
+            return is_online, hostname, mac, open_ports
         except Exception as e:
             logger.error(f"[ping_host] Критическая ошибка при пинге {ip}: {type(e).__name__}: {e}")
-            return False, "", ""
+            return False, "", "", ""
+
+
+async def scan_ports(ip: str, timeout: float = 1.0) -> str:
+    """
+    Сканирует известные порты на хосте.
+    Возвращает строку с перечнем открытых портов в формате: HTTP(80),SSH(22)
+    """
+    import time
+    
+    # Проверяем кэш
+    current_time = time.time()
+    if ip in port_scan_cache and (current_time - port_scan_cache_time.get(ip, 0)) < PORT_SCAN_CACHE_TTL:
+        logger.debug(f"[scan_ports] Кэш хит для IP: {ip}")
+        return port_scan_cache[ip]
+    
+    logger.info(f"[scan_ports] Начало сканирования портов для IP: {ip}")
+    open_ports_list = []
+    
+    # Создаем задачи для проверки каждого порта
+    async def check_port(port: int, service: str) -> Optional[Tuple[int, str]]:
+        try:
+            loop = asyncio.get_event_loop()
+            
+            def try_connect():
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                result = sock.connect_ex((ip, port))
+                sock.close()
+                return result == 0
+            
+            is_open = await loop.run_in_executor(None, try_connect)
+            if is_open:
+                return (port, service)
+        except Exception as e:
+            logger.debug(f"[scan_ports] Ошибка при проверке порта {port} для {ip}: {e}")
+        return None
+    
+    # Проверка всех портов параллельно с ограничением
+    port_semaphore = asyncio.Semaphore(50)  # Ограничение до 50 одновременных подключений
+    
+    async def limited_check_port(port: int, service: str):
+        async with port_semaphore:
+            return await check_port(port, service)
+    
+    tasks = [limited_check_port(port, service) for port, service in KNOWN_PORTS.items()]
+    results = await asyncio.gather(*tasks)
+    
+    for result in results:
+        if result:
+            port, service = result
+            open_ports_list.append(f"{service}({port})")
+    
+    # Формируем результирующую строку
+    open_ports_str = ",".join(open_ports_list)
+    
+    # Сохраняем в кэш
+    port_scan_cache[ip] = open_ports_str
+    port_scan_cache_time[ip] = current_time
+    
+    logger.info(f"[scan_ports] Завершение сканирования для {ip}: найдено портов={len(open_ports_list)}")
+    return open_ports_str
 
 
 async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3):
@@ -617,34 +722,37 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
     async def ping_and_update(host):
         ip = host["ip"]
         logger.debug(f"[ping_and_update] Обработка хоста {ip}...")
-        is_online, hostname, mac = await ping_host(ip, timeout)
+        is_online, hostname, mac, open_ports = await ping_host(ip, timeout)
         # Получаем текущие значения из БД для сохранения существующих hostname и mac
         current_host = get_host(network_id, ip)
         # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
         update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
         update_mac = mac if mac else (current_host["mac"] if current_host else "")
-        logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
+        update_open_ports = open_ports if open_ports else (current_host.get("open_ports", "") if current_host else "")
+        logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
         # Если хост доступен - создаем/обновляем запись, если нет - только обновляем статус если запись существует
         if is_online:
-            save_host(
+            save_host_with_ports(
                 network_id=network_id,
                 ip=ip,
                 hostname=update_hostname,
                 comment="",
                 online=1,
                 mac=update_mac,
-                last_ping=now
+                last_ping=now,
+                open_ports=update_open_ports
             )
         else:
             # Для недоступных хостов всегда создаем/обновляем запись, чтобы сохранить last_ping
-            save_host(
+            save_host_with_ports(
                 network_id=network_id,
                 ip=ip,
                 hostname=update_hostname,
                 comment="",
                 online=0,
                 mac=update_mac,
-                last_ping=now
+                last_ping=now,
+                open_ports=update_open_ports
             )
         return host["ip"], is_online
     
@@ -698,30 +806,32 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
 
     timeout = int(get_setting("ping_timeout", "3"))
     logger.info(f"[api_ping_single_host] Пинг хоста {ip} с таймаутом {timeout}с")
-    is_online, hostname, mac = await ping_host(ip, timeout)
+    is_online, hostname, mac, open_ports = await ping_host(ip, timeout)
     
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # Получаем текущие значения hostname и mac, если не получили новые
     current_host = get_host(network_id, ip)
     update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
     update_mac = mac if mac else (current_host["mac"] if current_host else "")
+    update_open_ports = open_ports if open_ports else (current_host.get("open_ports", "") if current_host else "")
     
-    logger.info(f"[api_ping_single_host] Результат для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
+    logger.info(f"[api_ping_single_host] Результат для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}', ports='{update_open_ports}'")
     
     # Если хост существует - обновляем, иначе создаем новую запись
     if current_host:
         logger.info(f"[api_ping_single_host] Обновление существующей записи для {ip}")
-        update_online(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac)
+        update_online_with_ports(network_id, ip, 1 if is_online else 0, now, update_hostname, update_mac, update_open_ports)
     else:
         logger.info(f"[api_ping_single_host] Создание новой записи для {ip}")
-        save_host(
+        save_host_with_ports(
             network_id=network_id,
             ip=ip,
             hostname=update_hostname,
             comment="",
             online=1 if is_online else 0,
             mac=update_mac,
-            last_ping=now
+            last_ping=now,
+            open_ports=update_open_ports
         )
     
     logger.info(f"[api_ping_single_host] Завершение обработки хоста {ip}")
@@ -730,5 +840,6 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
         "ip": ip,
         "online": is_online,
         "hostname": update_hostname,
-        "mac": update_mac
+        "mac": update_mac,
+        "open_ports": update_open_ports
     }

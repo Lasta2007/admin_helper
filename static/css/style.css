@@ -56,3 +56,13 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 /* Filter select */
 .filter-select{padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;font-size:13px;cursor:pointer;margin-left:10px}
 .filter-select:hover{border-color:#1976d2}
+
+/* Search input */
+.search-input{padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;font-size:13px;margin-left:10px;width:250px}
+.search-input:focus{outline:none;border-color:#1976d2;box-shadow:0 0 0 2px rgba(25,118,210,0.2)}
+
+/* Ports cell */
+.ports-cell{font-family:'Consolas',monospace;font-size:11px;color:#1976d2}
+
+/* Hostname display - smaller font under IP */
+.inlineHostname{font-size:11px;color:#666}
