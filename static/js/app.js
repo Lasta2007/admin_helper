@@ -453,14 +453,19 @@ function renderWorkPcTable(data){
       <td>${pc.date||'-'}</td>
       <td>${pc.computer_name||'-'}</td>
       <td>${pc.username||'-'}</td>
+      <td>${pc.ip_type||'-'}</td>
       <td>${pc.ip_address||'-'}</td>
       <td>${pc.mac_address||'-'}</td>
       <td>${pc.os_version||'-'}</td>
+      <td>${pc.kernel_version||'-'}</td>
+      <td>${pc.motherboard||'-'}</td>
+      <td>${pc.cpu||'-'}</td>
+      <td>${pc.disk_type||'-'}</td>
+      <td>${pc.hdd_free||'-'}</td>
+      <td>${pc.swap||'-'}</td>
       <td>${pc.r7_version||'-'}</td>
       <td>${pc.kav_version||'-'}</td>
       <td>${pc.csp_version||'-'}</td>
-      <td>${pc.cpu||'-'}</td>
-      <td>${pc.hdd_free||'-'}</td>
     `;
     tbody.appendChild(tr);
   });
