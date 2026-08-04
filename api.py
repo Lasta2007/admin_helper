@@ -618,9 +618,11 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
         ip = host["ip"]
         logger.debug(f"[ping_and_update] Обработка хоста {ip}...")
         is_online, hostname, mac = await ping_host(ip, timeout)
+        # Получаем текущие значения из БД для сохранения существующих hostname и mac
+        current_host = get_host(network_id, ip)
         # Обновляем только если получили hostname или mac, иначе сохраняем старые значения
-        update_hostname = hostname if hostname else host.get("hostname", "")
-        update_mac = mac if mac else host.get("mac", "")
+        update_hostname = hostname if hostname else (current_host["hostname"] if current_host else "")
+        update_mac = mac if mac else (current_host["mac"] if current_host else "")
         logger.debug(f"[ping_and_update] Обновление БД для {ip}: online={is_online}, hostname='{update_hostname}', mac='{update_mac}'")
         # Если хост доступен - создаем/обновляем запись, если нет - только обновляем статус если запись существует
         if is_online:
@@ -635,7 +637,6 @@ async def ping_all_hosts_parallel(hosts: list, network_id: int, timeout: int = 3
             )
         else:
             # Для недоступных хостов обновляем только если запись уже существует
-            current_host = get_host(network_id, ip)
             if current_host:
                 update_online(network_id, ip, 0, now, update_hostname, update_mac)
         return host["ip"], is_online
