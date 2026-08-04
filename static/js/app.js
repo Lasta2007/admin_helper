@@ -153,7 +153,7 @@ function renderHosts(hosts){
    
    const tr=document.createElement("tr");
    const statusClass=host.online?'status-online':'status-offline';
-   const lastPing=host.last_ping||'Никогда';
+   const lastPing=host.last_ping ? new Date(host.last_ping).toLocaleString() : 'Никогда';
    const macDisplay=host.mac||'-';
    tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
    <td>${host.ip}</td>
