@@ -174,9 +174,9 @@ function renderHosts(hosts){
    tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
    <td>${host.scanned_hostname ? `<div>${host.ip}<div class="scanned-hostname">${host.scanned_hostname}</div></div>` : host.ip}</td>
    <td><button class="ping-btn" data-ip="${host.ip}" data-network="${currentNetworkId}">Ping</button></td>
-   <td><input class="inlineHostname" value="${host.hostname||''}" placeholder="Вручную"></td>
+   <td><input class="inlineHostname" value="${host.hostname||''}"></td>
    <td class="ports-cell">${portsDisplay}</td>
-   <td><input class="inlineMac" value="${macDisplay}" placeholder="AA:BB:CC:DD:EE:FF"></td>
+   <td><input class="inlineMac" value="${macDisplay}"></td>
    <td><input class="inlineComment" value="${host.comment||''}"></td>`;
 
    async function save(){

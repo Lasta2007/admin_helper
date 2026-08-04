@@ -44,7 +44,7 @@ async def background_ping_task():
                     net = ipaddress.ip_network(network["cidr"], strict=False)
                     hosts_to_ping = [{"ip": str(ip)} for ip in net.hosts()]
                     
-                    # Выполняем пинг
+                    # Выполняем пинг (функция ping_all_hosts_parallel уже включает сканирование портов если включено в настройках)
                     await ping_all_hosts_parallel(hosts_to_ping, network["id"], timeout)
                     
                 except Exception as e:
