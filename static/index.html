@@ -10,6 +10,7 @@
 <div class="sidebar">
   <div class="logo">Admin Helper</div>
   <div class="nav-item" id="ipamNav">IPAM</div>
+  <div class="nav-item" id="workPcNav">WORK PC</div>
   <div class="nav-item" id="settingsNav">Настройки</div>
 </div>
 
@@ -44,6 +45,35 @@
     <table class="grid">
       <thead><tr><th>Status</th><th>IP</th><th>Ping</th><th>Hostname</th><th>Порты</th><th>MAC</th><th>Комментарий</th></tr></thead>
       <tbody id="hosts"></tbody>
+    </table>
+  </div>
+
+  <div id="workPcView" class="hidden">
+    <div class="header">
+      <a id="workPcBackBtn" class="back" href="#">&larr; Назад</a>
+      <h2>Рабочие компьютеры</h2>
+      <div class="toolbar">
+        <button id="refreshWorkPcBtn">Обновить</button>
+        <input type="text" id="workPcSearch" class="search-input" placeholder="Поиск по компьютерам...">
+      </div>
+    </div>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Дата</th>
+          <th>Компьютер</th>
+          <th>Пользователь</th>
+          <th>IP адрес</th>
+          <th>MAC адрес</th>
+          <th>ОС</th>
+          <th>R7</th>
+          <th>KAV</th>
+          <th>CSP</th>
+          <th>Процессор</th>
+          <th>HDD свободно</th>
+        </tr>
+      </thead>
+      <tbody id="workPcTable"></tbody>
     </table>
   </div>
 
