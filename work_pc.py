@@ -276,7 +276,8 @@ def get_work_pc_settings() -> Dict[str, str]:
     Получает настройки модуля WORK PC.
     """
     return {
-        'log_path': get_setting('work_pc_log_path', '')
+        'log_path': get_setting('work_pc_log_path', ''),
+        'update_interval': get_setting('work_pc_update_interval', '60')
     }
 
 
@@ -290,6 +291,19 @@ def set_work_pc_log_path(path: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"[set_work_pc_log_path] Ошибка при сохранении пути: {e}")
+        return False
+
+
+def set_work_pc_update_interval(interval: int) -> bool:
+    """
+    Устанавливает период обновления данных из файла log.txt (в минутах).
+    """
+    try:
+        set_setting('work_pc_update_interval', str(interval))
+        logger.info(f"[set_work_pc_update_interval] Период обновления установлен: {interval} мин")
+        return True
+    except Exception as e:
+        logger.error(f"[set_work_pc_update_interval] Ошибка при сохранении периода: {e}")
         return False
 
 

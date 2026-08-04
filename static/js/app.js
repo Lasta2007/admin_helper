@@ -96,6 +96,7 @@ function showIPAM(){
  document.getElementById("netView").classList.remove("hidden");
  document.getElementById("hostView").classList.add("hidden");
  document.getElementById("settingsView").classList.add("hidden");
+ document.getElementById("workPcView").classList.add("hidden");
  if(pingIntervalTimer){
    clearInterval(pingIntervalTimer);
    pingIntervalTimer=null;
@@ -121,6 +122,7 @@ function showSettings(){
  document.getElementById('settingsNav').classList.add('active');
  document.getElementById("netView").classList.add("hidden");
  document.getElementById("hostView").classList.add("hidden");
+ document.getElementById("workPcView").classList.add("hidden");
  document.getElementById("settingsView").classList.remove("hidden");
  loadSettings();
  if(pingIntervalTimer){
@@ -136,6 +138,18 @@ async function loadSettings(){
  document.getElementById('pingTimeoutInput').value=data.ping_timeout||3;
  document.getElementById('portScanEnabledCheckbox').checked=(data.port_scan_enabled==='1');
  document.getElementById('portScanIntervalInput').value=data.port_scan_interval||1440;
+ 
+ // Загружаем настройки WORK PC
+ try{
+   const workPcRes=await fetch('/api/work_pc/settings');
+   const workPcData=await workPcRes.json();
+   if(workPcData.status==='ok'){
+     document.getElementById('workPcLogPathInput').value=workPcData.settings.log_path||'';
+     document.getElementById('workPcUpdateIntervalInput').value=workPcData.settings.update_interval||60;
+   }
+ }catch(e){
+   console.error('Ошибка загрузки настроек WORK PC:', e);
+ }
 }
 
 document.getElementById('saveSettingsBtn').onclick=async()=>{
@@ -153,7 +167,53 @@ document.getElementById('saveSettingsBtn').onclick=async()=>{
      port_scan_interval:parseInt(portScanInterval)
    })
  });
- alert('Настройки сохранены');
+ alert('Настройки IPAM сохранены');
+};
+
+// WORK PC настройки - установка пути к log.txt
+document.getElementById('saveWorkPcLogPathBtn').onclick=async()=>{
+ const logPath=document.getElementById('workPcLogPathInput').value.trim();
+ if(!logPath){
+   alert('Укажите путь к файлу log.txt');
+   return;
+ }
+ try{
+   const res=await fetch('/api/work_pc/settings/log_path',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({log_path: logPath})
+   });
+   const result=await res.json();
+   if(res.ok){
+     alert('Путь к файлу установлен: '+logPath);
+   }else{
+     alert('Ошибка: '+(result.detail||'Не удалось установить путь'));
+   }
+ }catch(e){
+   console.error('Ошибка при установке пути:', e);
+   alert('Ошибка при установке пути к файлу');
+ }
+};
+
+// WORK PC настройки - сохранение периода обновления
+document.getElementById('saveWorkPcSettingsBtn').onclick=async()=>{
+ const updateInterval=document.getElementById('workPcUpdateIntervalInput').value;
+ try{
+   const res=await fetch('/api/work_pc/settings/update_interval',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({update_interval: parseInt(updateInterval)})
+   });
+   const result=await res.json();
+   if(res.ok){
+     alert('Настройки WORK PC сохранены');
+   }else{
+     alert('Ошибка: '+(result.detail||'Не удалось сохранить настройки'));
+   }
+ }catch(e){
+   console.error('Ошибка при сохранении настроек WORK PC:', e);
+   alert('Ошибка при сохранении настроек WORK PC');
+ }
 };
 
 async function openNetwork(network){

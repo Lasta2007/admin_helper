@@ -36,6 +36,7 @@ from work_pc import (
     get_work_pc_by_computer,
     get_work_pc_settings,
     set_work_pc_log_path,
+    set_work_pc_update_interval,
 )
 
 # Настройка логирования
@@ -100,6 +101,10 @@ class SettingsUpdate(BaseModel):
 
 class WorkPcLogPathUpdate(BaseModel):
     log_path: str
+
+
+class WorkPcUpdateIntervalUpdate(BaseModel):
+    update_interval: int
 
 
 def validate_cidr(cidr: str):
@@ -958,3 +963,22 @@ def api_set_work_pc_log_path(update: WorkPcLogPathUpdate):
         raise HTTPException(status_code=500, detail="Ошибка при сохранении пути к файлу")
     
     return {"status": "ok", "log_path": update.log_path}
+
+
+@router.post("/work_pc/settings/update_interval")
+def api_set_work_pc_update_interval(update: WorkPcUpdateIntervalUpdate):
+    """
+    Устанавливает период обновления данных из файла log.txt (в минутах).
+    """
+    logger.info(f"[api_set_work_pc_update_interval] Установка периода обновления: {update.update_interval} мин")
+    
+    if update.update_interval < 1:
+        raise HTTPException(status_code=400, detail="Период обновления должен быть больше 0")
+    
+    success = set_work_pc_update_interval(update.update_interval)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Ошибка при сохранении периода обновления")
+    
+    return {"status": "ok", "update_interval": update.update_interval}
+

@@ -1,20 +1,12 @@
-```
-# Python
-__pycache__/
+```gitignore
+# Compiled Python files
 *.pyc
-*.pyo
-*.pyd
+__pycache__/
 
-# Database
+# Database files
 *.db
-*.sqlite
-*.sqlite3
 
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
+# Environment files
 .env
 .env.local
 *.env.*
@@ -22,4 +14,34 @@ __pycache__/
 # Dependencies
 .venv/
 venv/
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+htmlcov/
+*.coverage
+
+# Cache directories
+.mypy_cache/
+.pytest_cache/
+.gradle/
 ```
