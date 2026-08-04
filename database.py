@@ -12,43 +12,91 @@ def get_connection():
     return conn
 
 
-def init_db():
+def migrate_db():
     """
-    Создает таблицы при первом запуске.
+    Миграция структуры базы данных.
+    Добавляет новые колонки и таблицы при необходимости.
+    Вызывается при каждом запуске приложения.
     """
     conn = get_connection()
-
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS networks(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cidr TEXT UNIQUE NOT NULL,
-        description TEXT DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS hosts(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        network_id INTEGER NOT NULL,
-        ip TEXT NOT NULL,
-        hostname TEXT DEFAULT '',
-        comment TEXT DEFAULT '',
-        online INTEGER DEFAULT 0,
-        mac TEXT DEFAULT '',
-        last_ping TEXT,
-        UNIQUE(network_id, ip),
-        FOREIGN KEY(network_id) REFERENCES networks(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS settings(
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    );
-
-    INSERT OR IGNORE INTO settings(key, value) VALUES('ping_interval', '60');
-    INSERT OR IGNORE INTO settings(key, value) VALUES('ping_timeout', '3');
-    """)
-
+    cursor = conn.cursor()
+    
+    # Получаем список существующих таблиц
+    existing_tables = cursor.execute("""
+        SELECT name FROM sqlite_master WHERE type='table'
+    """).fetchall()
+    table_names = [t['name'] for t in existing_tables]
+    
+    # Создаем таблицу networks если не существует
+    if 'networks' not in table_names:
+        cursor.execute("""
+        CREATE TABLE networks(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cidr TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT ''
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'networks' создана")
+    
+    # Создаем таблицу hosts если не существует
+    if 'hosts' not in table_names:
+        cursor.execute("""
+        CREATE TABLE hosts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            network_id INTEGER NOT NULL,
+            ip TEXT NOT NULL,
+            hostname TEXT DEFAULT '',
+            comment TEXT DEFAULT '',
+            online INTEGER DEFAULT 0,
+            mac TEXT DEFAULT '',
+            last_ping TEXT,
+            UNIQUE(network_id, ip),
+            FOREIGN KEY(network_id) REFERENCES networks(id)
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'hosts' создана")
+    
+    # Проверяем наличие колонки open_ports в таблице hosts
+    if 'hosts' in table_names:
+        columns = cursor.execute("PRAGMA table_info(hosts)").fetchall()
+        column_names = [c['name'] for c in columns]
+        
+        if 'open_ports' not in column_names:
+            cursor.execute("ALTER TABLE hosts ADD COLUMN open_ports TEXT DEFAULT ''")
+            logger.info("[migrate_db] Добавлена колонка 'open_ports' в таблицу 'hosts'")
+    
+    # Создаем таблицу settings если не существует
+    if 'settings' not in table_names:
+        cursor.execute("""
+        CREATE TABLE settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'settings' создана")
+    
+    # Вставляем настройки по умолчанию если их нет
+    cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ping_interval', '60')")
+    cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ping_timeout', '3')")
+    cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_enabled', '0')")
+    cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_interval', '1440')")
+    
     conn.commit()
     conn.close()
+    logger.info("[migrate_db] Миграция базы данных завершена")
+
+
+# Импортируем logger после определения функций чтобы избежать циклического импорта
+import logging
+logger = logging.getLogger('admin_helper')
+
+
+def init_db():
+    """
+    Устаревшая функция, оставлена для совместимости.
+    Теперь используется migrate_db().
+    """
+    migrate_db()
 
 
 # ----------------------------------------------------
@@ -312,6 +360,113 @@ def update_online(network_id: int,
         last_ping,
         hostname,
         mac,
+        network_id,
+        ip
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def save_host_with_ports(network_id: int,
+              ip: str,
+              hostname: str,
+              comment: str,
+              online: int = 0,
+              mac: str = '',
+              last_ping: str = None,
+              open_ports: str = ''):
+    """
+    Создает запись, если её нет,
+    либо обновляет существующую (с поддержкой open_ports).
+    """
+
+    conn = get_connection()
+
+    row = conn.execute("""
+        SELECT id
+        FROM hosts
+        WHERE network_id=?
+          AND ip=?
+    """, (
+        network_id,
+        ip
+    )).fetchone()
+
+    if row is None:
+
+        conn.execute("""
+            INSERT INTO hosts(
+                network_id,
+                ip,
+                hostname,
+                comment,
+                online,
+                mac,
+                last_ping,
+                open_ports
+            )
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            network_id,
+            ip,
+            hostname,
+            comment,
+            online,
+            mac,
+            last_ping,
+            open_ports
+        ))
+
+    else:
+
+        conn.execute("""
+            UPDATE hosts
+            SET hostname=?,
+                comment=?,
+                online=?,
+                mac=?,
+                last_ping=?,
+                open_ports=?
+            WHERE id=?
+        """, (
+            hostname,
+            comment,
+            online,
+            mac,
+            last_ping,
+            open_ports,
+            row["id"]
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def update_online_with_ports(network_id: int,
+                  ip: str,
+                  online: int,
+                  last_ping: str,
+                  hostname: str = '',
+                  mac: str = '',
+                  open_ports: str = ''):
+    conn = get_connection()
+
+    conn.execute("""
+        UPDATE hosts
+        SET online=?,
+            last_ping=?,
+            hostname=?,
+            mac=?,
+            open_ports=?
+        WHERE network_id=?
+          AND ip=?
+    """, (
+        online,
+        last_ping,
+        hostname,
+        mac,
+        open_ports,
         network_id,
         ip
     ))

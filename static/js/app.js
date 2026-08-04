@@ -5,6 +5,7 @@ let pingIntervalTimer=null;
 let currentNetworkId=null;
 let isPinging=false;
 let allHosts=[];
+let globalSearchTerm='';
 
 // Получаем элементы модального окна
 const networkModal=document.getElementById('networkModal');
@@ -113,15 +114,24 @@ async function loadSettings(){
  const data=await res.json();
  document.getElementById('pingIntervalInput').value=data.ping_interval||60;
  document.getElementById('pingTimeoutInput').value=data.ping_timeout||3;
+ document.getElementById('portScanEnabledCheckbox').checked=(data.port_scan_enabled==='1');
+ document.getElementById('portScanIntervalInput').value=data.port_scan_interval||1440;
 }
 
 document.getElementById('saveSettingsBtn').onclick=async()=>{
  const interval=document.getElementById('pingIntervalInput').value;
  const timeout=document.getElementById('pingTimeoutInput').value;
+ const portScanEnabled=document.getElementById('portScanEnabledCheckbox').checked?'1':'0';
+ const portScanInterval=document.getElementById('portScanIntervalInput').value;
  await fetch('/api/settings',{
    method:'PUT',
    headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({ping_interval:parseInt(interval),ping_timeout:parseInt(timeout)})
+   body:JSON.stringify({
+     ping_interval:parseInt(interval),
+     ping_timeout:parseInt(timeout),
+     port_scan_enabled:portScanEnabled,
+     port_scan_interval:parseInt(portScanInterval)
+   })
  });
  alert('Настройки сохранены');
 };
@@ -146,19 +156,26 @@ function renderHosts(hosts){
  tbody.innerHTML="";
  
  const filterValue=document.getElementById('hostFilter').value;
+ const searchTerm=globalSearchTerm.toLowerCase();
  
  hosts.forEach(host=>{
    if(filterValue==='online' && !host.online) return;
    if(filterValue==='offline' && host.online) return;
    
+   // Глобальный поиск по всем полям
+   const searchStr=`${host.ip} ${host.hostname||''} ${host.comment||''} ${host.mac||''} ${host.open_ports||''}`.toLowerCase();
+   if(searchTerm && !searchStr.includes(searchTerm)) return;
+   
    const tr=document.createElement("tr");
    const statusClass=host.online?'status-online':'status-offline';
    const lastPing=host.last_ping ? new Date(host.last_ping).toLocaleString() : 'Никогда';
    const macDisplay=host.mac||'-';
+   const portsDisplay=host.open_ports||'-';
    tr.innerHTML=`<td><span class="status-dot ${statusClass}" title="Последняя проверка: ${lastPing}"></span></td>
    <td>${host.ip}</td>
    <td><button class="ping-btn" data-ip="${host.ip}" data-network="${currentNetworkId}">Ping</button></td>
    <td><input class="inlineHostname" value="${host.hostname||''}"></td>
+   <td class="ports-cell">${portsDisplay}</td>
    <td><input class="inlineMac" value="${macDisplay}" placeholder="AA:BB:CC:DD:EE:FF"></td>
    <td><input class="inlineComment" value="${host.comment||''}"></td>`;
 
@@ -194,6 +211,12 @@ document.getElementById('hostFilter').onchange=()=>{
   renderHosts(allHosts);
 };
 
+// Глобальный поиск
+document.getElementById('globalSearch').oninput=(e)=>{
+  globalSearchTerm=e.target.value;
+  renderHosts(allHosts);
+};
+
 async function pingSingleHost(networkId, ip, rowElement){
   if(isPinging)return;
   isPinging=true;
@@ -219,7 +242,14 @@ async function pingSingleHost(networkId, ip, rowElement){
         allHosts[hostIndex].online=result.online?1:0;
         allHosts[hostIndex].hostname=result.hostname||'';
         allHosts[hostIndex].mac=result.mac||'';
+        allHosts[hostIndex].open_ports=result.open_ports||'';
         allHosts[hostIndex].last_ping=new Date().toLocaleString();
+      }
+      
+      // Обновляем ячейку с портами
+      const portsCell=rowElement.querySelector('.ports-cell');
+      if(portsCell){
+        portsCell.textContent=result.open_ports||'-';
       }
     }
   }catch(e){
