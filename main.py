@@ -23,11 +23,14 @@ async def background_ping_task():
     
     while background_task_running:
         try:
-            # Получаем интервал из настроек
-            interval = int(get_setting("ping_interval", "60"))
+            # Получаем интервал из настроек (в минутах)
+            interval_minutes = int(get_setting("ping_interval", "60"))
             timeout = int(get_setting("ping_timeout", "3"))
             
-            logger.info(f"[background_ping_task] Начало фонового пинга всех подсетей (интервал: {interval}с)")
+            # Конвертируем минуты в секунды
+            interval_seconds = interval_minutes * 60
+            
+            logger.info(f"[background_ping_task] Начало фонового пинга всех подсетей (интервал: {interval_minutes} мин)")
             
             # Получаем все подсети
             networks = get_networks()
@@ -47,10 +50,10 @@ async def background_ping_task():
                 except Exception as e:
                     logger.error(f"[background_ping_task] Ошибка при пинге подсети {network['cidr']}: {e}")
             
-            logger.info(f"[background_ping_task] Фоновый пинг завершен. Следующий через {interval}с")
+            logger.info(f"[background_ping_task] Фоновый пинг завершен. Следующий через {interval_minutes} мин")
             
-            # Ждем следующий интервал
-            await asyncio.sleep(interval)
+            # Ждем следующий интервал (в секундах)
+            await asyncio.sleep(interval_seconds)
             
         except asyncio.CancelledError:
             logger.info("[background_ping_task] Задача отменена")
