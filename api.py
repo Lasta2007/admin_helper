@@ -29,6 +29,15 @@ from database import (
     update_online_with_ports,
 )
 
+# Импортируем функции модуля WORK PC
+from work_pc import (
+    refresh_work_pc_data,
+    get_work_pc_data,
+    get_work_pc_by_computer,
+    get_work_pc_settings,
+    set_work_pc_log_path,
+)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +96,10 @@ class SettingsUpdate(BaseModel):
     ping_timeout: int = 3
     port_scan_enabled: int = 0
     port_scan_interval: int = 1440
+
+
+class WorkPcLogPathUpdate(BaseModel):
+    log_path: str
 
 
 def validate_cidr(cidr: str):
@@ -873,3 +886,75 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
         "mac": update_mac,
         "open_ports": update_open_ports
     }
+
+
+# ----------------------------------------------------
+# WORK PC Module API
+# ----------------------------------------------------
+
+@router.get("/work_pc")
+def api_get_work_pc_data():
+    """
+    Получает все данные из таблицы work_pc.
+    Возвращает список записей о рабочих компьютерах.
+    """
+    logger.info("[api_get_work_pc_data] Запрос данных work_pc")
+    data = get_work_pc_data()
+    return {"status": "ok", "data": data}
+
+
+@router.get("/work_pc/{computer_name}")
+def api_get_work_pc_by_computer(computer_name: str):
+    """
+    Получает данные по конкретному компьютеру.
+    """
+    logger.info(f"[api_get_work_pc_by_computer] Запрос данных для компьютера: {computer_name}")
+    data = get_work_pc_by_computer(computer_name)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Компьютер {computer_name} не найден")
+    return {"status": "ok", "data": data}
+
+
+@router.post("/work_pc/refresh")
+def api_refresh_work_pc_data():
+    """
+    Обновляет данные в таблице work_pc из файла log.txt.
+    Путь к файлу берется из настроек.
+    """
+    logger.info("[api_refresh_work_pc_data] Запрос на обновление данных work_pc")
+    result = refresh_work_pc_data()
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["message"])
+    
+    return result
+
+
+@router.get("/work_pc/settings")
+def api_get_work_pc_settings():
+    """
+    Получает настройки модуля WORK PC.
+    """
+    logger.info("[api_get_work_pc_settings] Запрос настроек work_pc")
+    settings = get_work_pc_settings()
+    return {"status": "ok", "settings": settings}
+
+
+@router.post("/work_pc/settings/log_path")
+def api_set_work_pc_log_path(update: WorkPcLogPathUpdate):
+    """
+    Устанавливает путь к файлу log.txt в настройках.
+    """
+    logger.info(f"[api_set_work_pc_log_path] Установка пути к файлу: {update.log_path}")
+    
+    # Проверяем существование файла
+    from pathlib import Path
+    if not Path(update.log_path).exists():
+        raise HTTPException(status_code=400, detail=f"Файл не найден: {update.log_path}")
+    
+    success = set_work_pc_log_path(update.log_path)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Ошибка при сохранении пути к файлу")
+    
+    return {"status": "ok", "log_path": update.log_path}

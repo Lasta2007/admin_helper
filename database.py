@@ -90,6 +90,9 @@ def migrate_db():
     conn.commit()
     conn.close()
     logger.info("[migrate_db] Миграция базы данных завершена")
+    
+    # Инициализируем таблицу work_pc
+    init_work_pc_table_from_db()
 
 
 # Импортируем logger после определения функций чтобы избежать циклического импорта
@@ -103,6 +106,15 @@ def init_db():
     Теперь используется migrate_db().
     """
     migrate_db()
+
+
+def init_work_pc_table_from_db():
+    """
+    Инициализирует таблицу work_pc при миграции БД.
+    Вызывается из migrate_db после создания основных таблиц.
+    """
+    from work_pc import init_work_pc_table as init_work_pc
+    init_work_pc()
 
 
 # ----------------------------------------------------
