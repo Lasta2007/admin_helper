@@ -421,6 +421,7 @@ saveNetworkBtn.onclick=async()=>{
 
 // WORK PC модуль
 let allWorkPcData=[];
+let workPcHeaders=[];
 
 async function loadWorkPcData(){
   try{
@@ -431,48 +432,48 @@ async function loadWorkPcData(){
     }
     const result=await res.json();
     allWorkPcData=result.data||[];
-    renderWorkPcTable(allWorkPcData);
+    workPcHeaders=result.headers||[];
+    renderWorkPcTable(allWorkPcData, workPcHeaders);
   }catch(e){
     console.error('Ошибка при загрузке WORK PC:', e);
   }
 }
 
-function renderWorkPcTable(data){
+function renderWorkPcTable(data, headers){
   const tbody=document.getElementById('workPcTable');
+  const thead=document.querySelector('#workPcView table thead tr');
   tbody.innerHTML='';
+  
+  // Если есть заголовки из файла, обновляем шапку таблицы
+  if(headers && headers.length > 0){
+    thead.innerHTML='';
+    headers.forEach(h=>{
+      const th=document.createElement('th');
+      th.textContent=h;
+      thead.appendChild(th);
+    });
+  }
   
   const searchTerm=document.getElementById('workPcSearch').value.toLowerCase();
   
   data.forEach(pc=>{
     // Поиск по всем полям
-    const searchStr=`${pc.computer_name||''} ${pc.username||''} ${pc.ip_address||''} ${pc.mac_address||''} ${pc.os_version||''}`.toLowerCase();
+    const searchStr=Object.values(pc).join(' ').toLowerCase();
     if(searchTerm && !searchStr.includes(searchTerm)) return;
     
     const tr=document.createElement('tr');
-    tr.innerHTML=`
-      <td>${pc.date||'-'}</td>
-      <td>${pc.computer_name||'-'}</td>
-      <td>${pc.username||'-'}</td>
-      <td>${pc.ip_type||'-'}</td>
-      <td>${pc.ip_address||'-'}</td>
-      <td>${pc.mac_address||'-'}</td>
-      <td>${pc.os_version||'-'}</td>
-      <td>${pc.kernel_version||'-'}</td>
-      <td>${pc.motherboard||'-'}</td>
-      <td>${pc.cpu||'-'}</td>
-      <td>${pc.disk_type||'-'}</td>
-      <td>${pc.hdd_free||'-'}</td>
-      <td>${pc.swap||'-'}</td>
-      <td>${pc.r7_version||'-'}</td>
-      <td>${pc.kav_version||'-'}</td>
-      <td>${pc.csp_version||'-'}</td>
-    `;
+    // Используем порядок ключей из объекта pc для отображения
+    Object.values(pc).forEach(val=>{
+      const td=document.createElement('td');
+      td.textContent=val||'-';
+      tr.appendChild(td);
+    });
     tbody.appendChild(tr);
   });
 }
 
 document.getElementById('workPcSearch').oninput=()=>{
-  renderWorkPcTable(allWorkPcData);
+  renderWorkPcTable(allWorkPcData, workPcHeaders);
 };
 
 document.getElementById('refreshWorkPcBtn').onclick=async()=>{

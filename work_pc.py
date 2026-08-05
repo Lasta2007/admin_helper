@@ -26,6 +26,8 @@ def parse_log_line(line: str, headers: List[str]) -> Optional[Dict[str, str]]:
     """
     Парсит одну строку из файла log.txt.
     Возвращает словарь с данными или None если строка некорректна.
+    Поддерживает гибкое количество полей - минимум 15, максимум len(headers).
+    Если полей меньше чем заголовков, недостающие поля заполняются пустыми строками.
     """
     line = line.strip()
     if not line:
@@ -33,10 +35,21 @@ def parse_log_line(line: str, headers: List[str]) -> Optional[Dict[str, str]]:
     
     parts = line.split('|')
     
-    # Количество полей должно соответствовать количеству заголовков
-    if len(parts) != len(headers):
-        logger.warning(f"[parse_log_line] Некорректная строка (ожидается {len(headers)} полей, получено {len(parts)}): {line[:100]}")
+    # Минимальное количество полей для корректной строки
+    min_fields = 15
+    
+    if len(parts) < min_fields:
+        logger.warning(f"[parse_log_line] Некорректная строка (меньше {min_fields} полей, получено {len(parts)}): {line[:100]}")
         return None
+    
+    # Если полей больше чем заголовков, обрезаем до количества заголовков
+    # Если полей меньше чем заголовков, дополняем пустыми значениями
+    if len(parts) > len(headers):
+        logger.debug(f"[parse_log_line] Строка содержит {len(parts)} полей, ожидаемо {len(headers)}. Обрезаем.")
+        parts = parts[:len(headers)]
+    elif len(parts) < len(headers):
+        logger.debug(f"[parse_log_line] Строка содержит {len(parts)} полей, ожидаемо {len(headers)}. Дополняем пустыми.")
+        parts.extend([''] * (len(headers) - len(parts)))
     
     # Создаем словарь с данными используя заголовки из первой строки
     data = {}
@@ -56,11 +69,11 @@ def parse_log_file(file_path: str) -> tuple[List[Dict[str, str]], List[str]]:
     result = []
     headers = []
     
-    # Стандартные заголовки для файлов без заголовков
+    # Стандартные заголовки для файлов без заголовков (на русском языке)
     DEFAULT_HEADERS = [
-        'date', 'os_version', 'kernel_version', 'computer_name', 'username',
-        'ip_type', 'ip_address', 'mac_address', 'motherboard', 'hdd_free',
-        'swap', 'cpu', 'disk_type', 'r7_version', 'kav_version', 'csp_version'
+        'Дата авторизации', 'Версия ОС', 'Версия ядра', 'Имя устройства', 'Имя пользователя',
+        'Тип сети', 'IP', 'Mac', 'Название мат. платы', 'Свободно места на основном разделе',
+        'Размер swap и насколько он занят', 'Процессор', 'Тип диска', 'Р7 офис', 'Касперский', 'Криптопро'
     ]
     
     try:
@@ -248,14 +261,14 @@ def get_work_pc_data() -> Dict[str, Any]:
 def get_work_pc_by_computer(computer_name: str) -> List[Dict[str, Any]]:
     """
     Получает данные по конкретному компьютеру из распарсенных данных.
-    Имя поля компьютера берется из заголовков (обычно 'computer_name' или 'Имя компьютера').
+    Имя поля компьютера берется из заголовков (обычно 'Имя устройства' или 'computer_name').
     """
     global _last_parsed_data, _last_headers
     
     # Определяем имя поля для имени компьютера
     computer_field = None
     for header in _last_headers:
-        if header.lower() in ['computer_name', 'имя компьютера', 'hostname', 'компьютер']:
+        if header.lower() in ['имя устройства', 'computer_name', 'имя компьютера', 'hostname', 'компьютер']:
             computer_field = header
             break
     

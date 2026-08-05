@@ -908,34 +908,6 @@ def api_get_work_pc_data():
     return result
 
 
-@router.get("/work_pc/{computer_name}")
-def api_get_work_pc_by_computer(computer_name: str):
-    """
-    Получает данные по конкретному компьютеру.
-    """
-    logger.info(f"[api_get_work_pc_by_computer] Запрос данных для компьютера: {computer_name}")
-    data = get_work_pc_by_computer(computer_name)
-    if not data:
-        raise HTTPException(status_code=404, detail=f"Компьютер {computer_name} не найден")
-    return {"status": "ok", "data": data}
-
-
-@router.post("/work_pc/refresh")
-def api_refresh_work_pc_data():
-    """
-    Проверяет изменение файла log.txt и парсит его при необходимости.
-    Путь к файлу берется из настроек.
-    Данные не сохраняются в базу данных.
-    """
-    logger.info("[api_refresh_work_pc_data] Проверка и обновление данных work_pc")
-    result = check_and_parse_log()
-    
-    if result["status"] == "error":
-        raise HTTPException(status_code=400, detail=result["message"])
-    
-    return result
-
-
 @router.get("/work_pc/settings")
 def api_get_work_pc_settings():
     """
@@ -982,4 +954,32 @@ def api_set_work_pc_update_interval(update: WorkPcUpdateIntervalUpdate):
         raise HTTPException(status_code=500, detail="Ошибка при сохранении периода обновления")
     
     return {"status": "ok", "update_interval": update.update_interval}
+
+
+@router.get("/work_pc/{computer_name}")
+def api_get_work_pc_by_computer(computer_name: str):
+    """
+    Получает данные по конкретному компьютеру.
+    """
+    logger.info(f"[api_get_work_pc_by_computer] Запрос данных для компьютера: {computer_name}")
+    data = get_work_pc_by_computer(computer_name)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"Компьютер {computer_name} не найден")
+    return {"status": "ok", "data": data}
+
+
+@router.post("/work_pc/refresh")
+def api_refresh_work_pc_data():
+    """
+    Проверяет изменение файла log.txt и парсит его при необходимости.
+    Путь к файлу берется из настроек.
+    Данные не сохраняются в базу данных.
+    """
+    logger.info("[api_refresh_work_pc_data] Проверка и обновление данных work_pc")
+    result = check_and_parse_log()
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["message"])
+    
+    return result
 
