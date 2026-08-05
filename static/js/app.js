@@ -478,18 +478,11 @@ function renderWorkPcTable(data, headers){
     workPcTable=null;
   }
   
-  // Инициализируем DataTables с SearchPanes и Select
+  // Инициализируем DataTables с SearchBuilder
   workPcTable=$('#workPcTable').DataTable({
-    dom: 'Pfrtip', // P - SearchPanes, f - filtering input, r - processing display, t - table, i - info, p - pagination
-    select: {
-      style: 'multi'
-    },
-    searchPanes: {
-      viewTotal: true,
-      cascadePanes: true,
-      dtOpts: {
-        searching: true
-      }
+    dom: 'Qlfrtip', // Q - SearchBuilder, l - length menu, f - filtering input, r - processing display, t - table, i - info, p - pagination
+    searchBuilder: {
+      columns: ':not(:last-child)' // Исключаем последнюю колонку из фильтрации
     },
     columns: headers.map(h=>({
       title: h,
@@ -509,12 +502,16 @@ function renderWorkPcTable(data, headers){
         next: 'Следующая',
         previous: 'Предыдущая'
       },
-      select: {
-        rows: {
-          _: '%d выбранных строк',
-          0: 'Нажмите на строку для выбора',
-          1: 'Выбрана 1 строка'
-        }
+      searchBuilder: {
+        button: {
+          0: 'Фильтр',
+          _: 'Фильтр (%d)'
+        },
+        condition: 'Условие',
+        delete: 'Удалить',
+        and: 'И',
+        or: 'ИЛИ',
+        data: 'Поле'
       }
     },
     order: [], // Отключаем сортировку по умолчанию
