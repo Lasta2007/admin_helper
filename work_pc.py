@@ -133,6 +133,14 @@ def parse_log_file(file_path: str) -> tuple[List[Dict[str, str]], List[str]]:
                 if data:
                     result.append(data)
         
+        # Сортируем данные по дате авторизации (по убыванию - новые записи сверху)
+        if result and 'Дата авторизации' in headers:
+            try:
+                result.sort(key=lambda x: x.get('Дата авторизации', ''), reverse=True)
+                logger.info(f"[parse_log_file] Данные отсортированы по дате авторизации (по убыванию)")
+            except Exception as e:
+                logger.warning(f"[parse_log_file] Ошибка при сортировке данных: {e}")
+        
         logger.info(f"[parse_log_file] Успешно распарсено {len(result)} записей из файла {file_path}")
         
     except Exception as e:

@@ -486,9 +486,7 @@ function renderWorkPcTable(data, headers){
   // Инициализируем DataTables с columnControl и searchList
   workPcTable=$('#workPcTable').DataTable({
     data: tableData,
-    columnControl: ['order', ['searchList']],
-    ordering: true,
-    order: [[0, 'desc']], // Сортировка по первому столбцу (дата) по убыванию
+    columnControl: [['searchList']],
     columns: headers && headers.length>0 ? headers.map(h=>({
       title: h,
       searchable: true,
