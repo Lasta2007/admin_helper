@@ -487,10 +487,11 @@ function renderWorkPcTable(data, headers){
   workPcTable=$('#workPcTable').DataTable({
     data: tableData,
     columnControl: [['searchList']],
+    order: [[0, 'desc']], // Сортировка по первому столбцу (дата) по убыванию
     columns: headers && headers.length>0 ? headers.map(h=>({
       title: h,
       searchable: true,
-      orderable: false // Отключаем сортировку по клику на заголовки
+      orderable: true // Разрешаем сортировку по клику на заголовки
     })) : [{title: 'Нет данных', searchable: false, orderable: false}],
     language: {
       search: 'Поиск:',
