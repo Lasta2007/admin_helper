@@ -487,14 +487,13 @@ function renderWorkPcTable(data, headers){
   workPcTable=$('#workPcTable').DataTable({
     data: tableData,
     columnControl: ['order', ['searchList']],
-    ordering: {
-      indicators: false,
-      handler: false
-    },
+    ordering: true,
+    order: [[0, 'desc']], // Сортировка по первому столбцу (дата) по убыванию
     columns: headers && headers.length>0 ? headers.map(h=>({
       title: h,
-      searchable: true
-    })) : [{title: 'Нет данных', searchable: false}],
+      searchable: true,
+      orderable: false // Отключаем сортировку по клику на заголовки
+    })) : [{title: 'Нет данных', searchable: false, orderable: false}],
     language: {
       search: 'Поиск:',
       lengthMenu: 'Показать _MENU_ записей',
@@ -509,12 +508,18 @@ function renderWorkPcTable(data, headers){
         previous: 'Предыдущая'
       }
     },
-    order: [],
     paging: false,
     pageLength: -1,
     responsive: true,
     autoWidth: false,
-    scrollX: true
+    scrollX: true,
+    createdRow: function(row, data, dataIndex){
+      $(row).css('font-size', '12px');
+    },
+    drawCallback: function(settings){
+      $('#workPcTable thead th').css({'font-size': '12px', 'white-space': 'nowrap'});
+      $('#workPcTable tbody td').css({'font-size': '12px', 'white-space': 'nowrap'});
+    }
   });
 }
 
