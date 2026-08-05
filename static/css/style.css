@@ -130,13 +130,22 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   text-align: left;
   padding: 12px;
   font-weight: 600;
-  white-space: nowrap;
+  white-space: normal;
+  word-wrap: break-word;
+  vertical-align: middle;
+  max-width: 200px;
+}
+
+#workPcTableContainer .gridjs-table{
+  table-layout: fixed;
 }
 
 #workPcTableContainer .gridjs-tbody td{
   padding: 10px;
   border-top: 1px solid #e5e5e5;
   background: #fff;
+  white-space: normal;
+  word-wrap: break-word;
 }
 
 #workPcTableContainer .gridjs-tr:hover{

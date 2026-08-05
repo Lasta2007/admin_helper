@@ -466,8 +466,10 @@ function renderWorkPcTable(data, headers){
     header: {
       content: h,
       style: {
-        'white-space': 'nowrap',
-        'text-align': 'left'
+        'white-space': 'normal',
+        'text-align': 'left',
+        'word-wrap': 'break-word',
+        'max-width': '200px'
       }
     }
   }));
@@ -476,22 +478,31 @@ function renderWorkPcTable(data, headers){
   workPcGrid=new gridjs.Grid({
     columns: columns,
     data: gridData,
-    search: {
-      keywordColumnIndex: 0,
-      selector: (cell, rowIndex, cellIndex)=>{
-        return cell;
-      }
-    },
+    search: true,
     pagination: {
       enabled: true,
       limit: 20,
       summary: false
     },
-    sort: true,
-    autoWidth: true,
+    sort: false,
+    autoWidth: false,
+    fixedHeader: true,
+    width: '100%',
+    height: '600px',
     style: {
       table: {
-        'white-space': 'nowrap'
+        'white-space': 'normal',
+        'word-wrap': 'break-word',
+        'table-layout': 'fixed'
+      },
+      th: {
+        'white-space': 'normal',
+        'word-wrap': 'break-word',
+        'vertical-align': 'middle'
+      },
+      td: {
+        'white-space': 'normal',
+        'word-wrap': 'break-word'
       }
     },
     language: {
