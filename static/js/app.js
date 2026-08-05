@@ -493,7 +493,8 @@ function renderWorkPcTable(data, headers){
     },
     columns: headers.map(h=>({
       title: h,
-      searchable: true
+      searchable: true,
+      orderable: false
     })),
     language: {
       search: 'Поиск:',
@@ -516,7 +517,7 @@ function renderWorkPcTable(data, headers){
         }
       }
     },
-    order: [[0, 'desc']], // Сортировка по первому столбцу по убыванию
+    order: [], // Отключаем сортировку по умолчанию
     pageLength: 25,
     responsive: true,
     autoWidth: false,
