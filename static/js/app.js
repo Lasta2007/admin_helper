@@ -478,16 +478,15 @@ function renderWorkPcTable(data, headers){
     workPcTable=null;
   }
   
-  // Инициализируем DataTables с SearchBuilder
+  // Инициализируем DataTables с SearchPanes
   workPcTable=$('#workPcTable').DataTable({
-    dom: 'Qlfrtip', // Q - SearchBuilder, l - length menu, f - filtering input, r - processing display, t - table, i - info, p - pagination
-    searchBuilder: {
+    dom: 'Plfrtip', // P - SearchPanes, l - length menu, f - filtering input, r - processing display, t - table, i - info, p - pagination
+    searchPanes: {
       columns: ':not(:last-child)' // Исключаем последнюю колонку из фильтрации
     },
     columns: headers.map(h=>({
       title: h,
-      searchable: true,
-      orderable: false
+      searchable: true
     })),
     language: {
       search: 'Поиск:',
@@ -502,16 +501,21 @@ function renderWorkPcTable(data, headers){
         next: 'Следующая',
         previous: 'Предыдущая'
       },
-      searchBuilder: {
+      searchPanes: {
         button: {
           0: 'Фильтр',
           _: 'Фильтр (%d)'
         },
-        condition: 'Условие',
-        delete: 'Удалить',
-        and: 'И',
-        or: 'ИЛИ',
-        data: 'Поле'
+        clear: 'Очистить',
+        collapse: {
+          0: 'SearchPanes',
+          _: 'SearchPanes (%d)'
+        },
+        count: '{total}',
+        emptyMessage: 'Нет данных',
+        loadMessage: 'Загрузка...',
+        showMessage: 'Показать все',
+        title: 'Активные фильтры - %d'
       }
     },
     order: [], // Отключаем сортировку по умолчанию
