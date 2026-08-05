@@ -449,29 +449,41 @@ function renderWorkPcTable(data, headers){
     theadRow.innerHTML='';
     headers.forEach((h, index)=>{
       const th=document.createElement('th');
-      th.style.display='flex';
-      th.style.alignItems='center';
-      th.style.gap='8px';
+      th.className='work-pc-header-cell';
       th.style.whiteSpace='nowrap';
+      th.style.padding='8px';
+      th.style.borderBottom='2px solid #ddd';
+      th.style.position='relative';
+      
+      // Контейнер для содержимого заголовка
+      const headerContent=document.createElement('div');
+      headerContent.style.display='flex';
+      headerContent.style.alignItems='center';
+      headerContent.style.justifyContent='space-between';
+      headerContent.style.gap='4px';
       
       const headerText=document.createElement('span');
       headerText.textContent=h;
       headerText.style.fontWeight='bold';
-      
-      // Контейнер для фильтра
-      const filterContainer=document.createElement('div');
-      filterContainer.style.position='relative';
-      filterContainer.style.display='inline-block';
+      headerText.style.flex='1';
+      headerText.style.overflow='hidden';
+      headerText.style.textOverflow='ellipsis';
       
       // Значок фильтра
       const filterIcon=document.createElement('span');
       filterIcon.textContent='🔽';
+      filterIcon.className='filter-icon';
       filterIcon.style.cursor='pointer';
-      filterIcon.style.fontSize='14px';
-      filterIcon.style.padding='2px 6px';
+      filterIcon.style.fontSize='12px';
+      filterIcon.style.padding='2px 4px';
       filterIcon.style.borderRadius='4px';
       filterIcon.style.background='#e0e0e0';
       filterIcon.title='Фильтр';
+      filterIcon.dataset.columnIndex=index;
+      
+      headerContent.appendChild(headerText);
+      headerContent.appendChild(filterIcon);
+      th.appendChild(headerContent);
       
       // Выпадающий список (скрыт по умолчанию)
       const filterSelect=document.createElement('select');
@@ -490,6 +502,7 @@ function renderWorkPcTable(data, headers){
       filterSelect.style.minWidth='150px';
       filterSelect.style.maxHeight='200px';
       filterSelect.style.overflowY='auto';
+      filterSelect.style.boxShadow='0 2px 8px rgba(0,0,0,0.2)';
       
       // Добавляем опцию "Все"
       const allOption=document.createElement('option');
@@ -515,43 +528,44 @@ function renderWorkPcTable(data, headers){
       });
       
       filterSelect.onchange=()=>{
-        filterSelect.style.display='none';
-        filterIcon.style.background='#e0e0e0';
         filterWorkPcTable();
       };
       
       // Показываем/скрываем фильтр по клику на значок
       filterIcon.onclick=(e)=>{
         e.stopPropagation();
-        const isVisible=filterSelect.style.display==='block';
-        // Скрываем все остальные фильтры
-        document.querySelectorAll('.column-filter').forEach(s=>s.style.display='none');
-        document.querySelectorAll('[data-filter-icon]').forEach(icon=>icon.style.background='#e0e0e0');
+        const currentIndex=filterIcon.dataset.columnIndex;
         
-        if(!isVisible){
+        // Проверяем, открыт ли уже этот фильтр
+        const isCurrentlyVisible=filterSelect.style.display==='block';
+        
+        // Скрываем все фильтры
+        document.querySelectorAll('.column-filter').forEach(s=>{
+          s.style.display='none';
+        });
+        document.querySelectorAll('.filter-icon').forEach(icon=>{
+          icon.style.background='#e0e0e0';
+          icon.style.color='inherit';
+        });
+        
+        // Если фильтр был закрыт, открываем его
+        if(!isCurrentlyVisible){
           filterSelect.style.display='block';
           filterIcon.style.background='#1976d2';
           filterIcon.style.color='#fff';
         }
       };
       
-      filterSelect.dataset.filterIcon='true';
-      filterIcon.dataset.filterIcon='true';
-      
-      filterContainer.appendChild(filterIcon);
-      filterContainer.appendChild(filterSelect);
-      
-      th.appendChild(headerText);
-      th.appendChild(filterContainer);
+      th.appendChild(filterSelect);
       theadRow.appendChild(th);
     });
   }
   
-  // Закрываем фильтры при клике вне таблицы
+  // Закрываем фильтры при клике вне таблицы или вне текущего заголовка
   document.addEventListener('click', (e)=>{
-    if(!e.target.closest('#workPcView')){
+    if(!e.target.closest('.filter-icon') && !e.target.closest('.column-filter')){
       document.querySelectorAll('.column-filter').forEach(s=>s.style.display='none');
-      document.querySelectorAll('[data-filter-icon]').forEach(icon=>{
+      document.querySelectorAll('.filter-icon').forEach(icon=>{
         icon.style.background='#e0e0e0';
         icon.style.color='inherit';
       });
