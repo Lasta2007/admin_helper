@@ -1,4 +1,5 @@
-```gitignore
-__pycache__/
-*.pyc
+```
+# Build artifacts
+static/css/lib/*.min.css
+static/js/lib/*.min.js
 ```
