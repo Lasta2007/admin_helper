@@ -69,3 +69,33 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 
 /* Scanned hostname displayed under IP address */
 .scanned-hostname{font-size:11px;color:#666;margin-top:2px}
+
+/* WORK PC table filters */
+#workPcHeadersRow th{
+  position: relative;
+  padding: 12px 8px;
+  vertical-align: middle;
+}
+
+.column-filter{
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.column-filter option{
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.column-filter option:hover{
+  background: #e3f2fd;
+}
+
+[data-filter-icon]{
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+[data-filter-icon]:hover{
+  background: #1976d2 !important;
+  color: #fff !important;
+}
