@@ -517,8 +517,8 @@ function renderWorkPcTable(data, headers){
       $(row).css('font-size', '12px');
     },
     drawCallback: function(settings){
-      $('#workPcTable thead th').css({'font-size': '12px', 'white-space': 'nowrap'});
-      $('#workPcTable tbody td').css({'font-size': '12px', 'white-space': 'nowrap'});
+      $('#workPcTable thead th').css({'font-size': '12px', 'white-space': 'normal'});
+      $('#workPcTable tbody td').css({'font-size': '12px', 'white-space': 'normal'});
     }
   });
 }
