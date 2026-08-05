@@ -419,9 +419,10 @@ saveNetworkBtn.onclick=async()=>{
  }
 };
 
-// WORK PC модуль
+// WORK PC модуль с использованием GridJS
 let allWorkPcData=[];
 let workPcHeaders=[];
+let workPcGrid=null;
 
 async function loadWorkPcData(){
   try{
@@ -440,202 +441,75 @@ async function loadWorkPcData(){
 }
 
 function renderWorkPcTable(data, headers){
-  const tbody=document.getElementById('workPcTable');
-  const theadRow=document.getElementById('workPcHeadersRow');
-  tbody.innerHTML='';
+  const container=document.getElementById('workPcTableContainer');
+  container.innerHTML='';
   
-  // Если есть заголовки из файла, обновляем шапку таблицы с фильтрами
-  if(headers && headers.length > 0){
-    theadRow.innerHTML='';
-    headers.forEach((h, index)=>{
-      const th=document.createElement('th');
-      th.className='work-pc-header-cell';
-      th.style.whiteSpace='nowrap';
-      th.style.padding='8px';
-      th.style.borderBottom='2px solid #ddd';
-      th.style.position='relative';
-      
-      // Контейнер для содержимого заголовка
-      const headerContent=document.createElement('div');
-      headerContent.style.display='flex';
-      headerContent.style.alignItems='center';
-      headerContent.style.justifyContent='space-between';
-      headerContent.style.gap='4px';
-      
-      const headerText=document.createElement('span');
-      headerText.textContent=h;
-      headerText.style.fontWeight='bold';
-      headerText.style.flex='1';
-      headerText.style.overflow='hidden';
-      headerText.style.textOverflow='ellipsis';
-      
-      // Значок фильтра
-      const filterIcon=document.createElement('span');
-      filterIcon.textContent='🔽';
-      filterIcon.className='filter-icon';
-      filterIcon.style.cursor='pointer';
-      filterIcon.style.fontSize='12px';
-      filterIcon.style.padding='2px 4px';
-      filterIcon.style.borderRadius='4px';
-      filterIcon.style.background='#e0e0e0';
-      filterIcon.title='Фильтр';
-      filterIcon.dataset.columnIndex=index;
-      
-      headerContent.appendChild(headerText);
-      headerContent.appendChild(filterIcon);
-      th.appendChild(headerContent);
-      
-      // Выпадающий список (скрыт по умолчанию)
-      const filterSelect=document.createElement('select');
-      filterSelect.className='column-filter';
-      filterSelect.dataset.columnIndex=index;
-      filterSelect.style.display='none';
-      filterSelect.style.position='absolute';
-      filterSelect.style.top='100%';
-      filterSelect.style.left='0';
-      filterSelect.style.zIndex='1000';
-      filterSelect.style.padding='4px';
-      filterSelect.style.fontSize='12px';
-      filterSelect.style.border='1px solid #ccc';
-      filterSelect.style.borderRadius='4px';
-      filterSelect.style.background='#fff';
-      filterSelect.style.minWidth='150px';
-      filterSelect.style.maxHeight='200px';
-      filterSelect.style.overflowY='auto';
-      filterSelect.style.boxShadow='0 2px 8px rgba(0,0,0,0.2)';
-      
-      // Добавляем опцию "Все"
-      const allOption=document.createElement('option');
-      allOption.value='';
-      allOption.textContent='Все';
-      filterSelect.appendChild(allOption);
-      
-      // Собираем уникальные значения для этой колонки
-      const uniqueValues=new Set();
-      data.forEach(pc=>{
-        const values=Object.values(pc);
-        if(index < values.length && values[index]){
-          uniqueValues.add(values[index]);
-        }
-      });
-      
-      // Сортируем уникальные значения и добавляем в select
-      Array.from(uniqueValues).sort().forEach(val=>{
-        const option=document.createElement('option');
-        option.value=val;
-        option.textContent=val;
-        filterSelect.appendChild(option);
-      });
-      
-      filterSelect.onchange=()=>{
-        filterWorkPcTable();
-      };
-      
-      // Показываем/скрываем фильтр по клику на значок
-      filterIcon.onclick=(e)=>{
-        e.stopPropagation();
-        const currentIndex=filterIcon.dataset.columnIndex;
-        
-        // Проверяем, открыт ли уже этот фильтр
-        const isCurrentlyVisible=filterSelect.style.display==='block';
-        
-        // Скрываем все фильтры
-        document.querySelectorAll('.column-filter').forEach(s=>{
-          s.style.display='none';
-        });
-        document.querySelectorAll('.filter-icon').forEach(icon=>{
-          icon.style.background='#e0e0e0';
-          icon.style.color='inherit';
-        });
-        
-        // Если фильтр был закрыт, открываем его
-        if(!isCurrentlyVisible){
-          filterSelect.style.display='block';
-          filterIcon.style.background='#1976d2';
-          filterIcon.style.color='#fff';
-        }
-      };
-      
-      th.appendChild(filterSelect);
-      theadRow.appendChild(th);
-    });
+  if(!headers || headers.length===0 || !data || data.length===0){
+    container.innerHTML='<p>Нет данных для отображения</p>';
+    return;
   }
   
-  // Закрываем фильтры при клике вне таблицы или вне текущего заголовка
-  document.addEventListener('click', (e)=>{
-    if(!e.target.closest('.filter-icon') && !e.target.closest('.column-filter')){
-      document.querySelectorAll('.column-filter').forEach(s=>s.style.display='none');
-      document.querySelectorAll('.filter-icon').forEach(icon=>{
-        icon.style.background='#e0e0e0';
-        icon.style.color='inherit';
-      });
-    }
-  });
-  
-  filterWorkPcTable(data);
-}
-
-function filterWorkPcTable(data=allWorkPcData){
-  const tbody=document.getElementById('workPcTable');
-  tbody.innerHTML='';
-  
-  // Получаем значения всех фильтров (теперь это select)
-  const filters=[];
-  document.querySelectorAll('.column-filter').forEach(select=>{
-    filters.push(select.value);
-  });
-  
-  // Глобальный поиск
-  const globalSearchTerm=document.getElementById('workPcSearch').value.toLowerCase();
-  
-  let filteredData=data.filter(pc=>{
+  // Преобразуем данные в формат для GridJS
+  // data - это массив объектов, где ключи - это индексы или названия полей
+  const gridData=data.map(pc=>{
     const values=Object.values(pc);
-    
-    // Проверка по глобальному поиску
-    if(globalSearchTerm){
-      const searchStr=values.join(' ').toLowerCase();
-      if(!searchStr.includes(globalSearchTerm)) return false;
+    // Убеждаемся, что массив значений соответствует количеству заголовков
+    while(values.length < headers.length){
+      values.push('-');
     }
-    
-    // Проверка по фильтрам колонок
-    for(let i=0; i<filters.length; i++){
-      if(filters[i] && i<values.length){
-        if(values[i] !== filters[i]) return false;
+    return values;
+  });
+  
+  // Создаем конфигурацию колонок с заголовками
+  const columns=headers.map(h=>({
+    name: h,
+    header: {
+      content: h,
+      style: {
+        'white-space': 'nowrap',
+        'text-align': 'left'
       }
     }
-    
-    return true;
-  });
+  }));
   
-  // Сортировка по дате авторизации (первая колонка) - свежие записи в начале
-  filteredData.sort((a, b)=>{
-    const valuesA=Object.values(a);
-    const valuesB=Object.values(b);
-    if(valuesA.length > 0 && valuesB.length > 0){
-      const dateA=new Date(valuesA[0]);
-      const dateB=new Date(valuesB[0]);
-      if(!isNaN(dateA) && !isNaN(dateB)){
-        return dateB - dateA; // По убыванию (свежие сначала)
+  // Инициализируем GridJS
+  workPcGrid=new gridjs.Grid({
+    columns: columns,
+    data: gridData,
+    search: {
+      keywordColumnIndex: 0,
+      selector: (cell, rowIndex, cellIndex)=>{
+        return cell;
       }
+    },
+    pagination: {
+      enabled: true,
+      limit: 20,
+      summary: false
+    },
+    sort: true,
+    autoWidth: true,
+    style: {
+      table: {
+        'white-space': 'nowrap'
+      }
+    },
+    language: {
+      'search': {
+        'placeholder': 'Поиск по компьютерам...'
+      },
+      'pagination': {
+        'previous': '← Пред.',
+        'next': 'След. →',
+        'showing': 'Показано',
+        'results': () => ''
+      },
+      'noRecordsFound': 'Нет записей'
     }
-    return 0;
   });
   
-  filteredData.forEach(pc=>{
-    const tr=document.createElement('tr');
-    const values=Object.values(pc);
-    values.forEach(val=>{
-      const td=document.createElement('td');
-      td.textContent=val||'-';
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
+  workPcGrid.render(container);
 }
-
-document.getElementById('workPcSearch').oninput=()=>{
-  filterWorkPcTable(allWorkPcData);
-};
 
 document.getElementById('refreshWorkPcBtn').onclick=async()=>{
   try{

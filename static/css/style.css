@@ -111,3 +111,70 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   background: #1976d2 !important;
   color: #fff !important;
 }
+
+/* GridJS стили для WORK PC таблицы */
+#workPcTableContainer .gridjs-container{
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+}
+
+#workPcTableContainer .gridjs-table{
+  width: 100%;
+  margin: 0;
+}
+
+#workPcTableContainer .gridjs-thead th{
+  background: #eceff1;
+  text-align: left;
+  padding: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#workPcTableContainer .gridjs-tbody td{
+  padding: 10px;
+  border-top: 1px solid #e5e5e5;
+  background: #fff;
+}
+
+#workPcTableContainer .gridjs-tr:hover{
+  background: #f5f9ff;
+  cursor: pointer;
+}
+
+#workPcTableContainer .gridjs-search-input{
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 250px;
+}
+
+#workPcTableContainer .gridjs-search-input:focus{
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25,118,210,0.2);
+}
+
+#workPcTableContainer .gridjs-pagination{
+  padding: 10px;
+}
+
+#workPcTableContainer .gridjs-pagination button{
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+#workPcTableContainer .gridjs-pagination button:hover{
+  background: #f5f5f5;
+}
+
+#workPcTableContainer .gridjs-pagination button:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+}
