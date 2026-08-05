@@ -478,9 +478,12 @@ function renderWorkPcTable(data, headers){
     workPcTable=null;
   }
   
-  // Инициализируем DataTables с SearchPanes
+  // Инициализируем DataTables с SearchPanes и Select
   workPcTable=$('#workPcTable').DataTable({
     dom: 'Pfrtip', // P - SearchPanes, f - filtering input, r - processing display, t - table, i - info, p - pagination
+    select: {
+      style: 'multi'
+    },
     searchPanes: {
       viewTotal: true,
       cascadePanes: true,
@@ -504,6 +507,13 @@ function renderWorkPcTable(data, headers){
         last: 'Последняя',
         next: 'Следующая',
         previous: 'Предыдущая'
+      },
+      select: {
+        rows: {
+          _: '%d выбранных строк',
+          0: 'Нажмите на строку для выбора',
+          1: 'Выбрана 1 строка'
+        }
       }
     },
     order: [[0, 'desc']], // Сортировка по первому столбцу по убыванию
