@@ -510,7 +510,8 @@ function renderWorkPcTable(data, headers){
       }
     },
     order: [],
-    pageLength: 25,
+    paging: false,
+    pageLength: -1,
     responsive: true,
     autoWidth: false,
     scrollX: true
