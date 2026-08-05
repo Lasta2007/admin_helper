@@ -419,10 +419,10 @@ saveNetworkBtn.onclick=async()=>{
  }
 };
 
-// WORK PC модуль с использованием GridJS
+// WORK PC модуль с использованием DataTables и SearchPanes
 let allWorkPcData=[];
 let workPcHeaders=[];
-let workPcGrid=null;
+let workPcTable=null;
 
 async function loadWorkPcData(){
   try{
@@ -441,83 +441,77 @@ async function loadWorkPcData(){
 }
 
 function renderWorkPcTable(data, headers){
-  const container=document.getElementById('workPcTableContainer');
-  container.innerHTML='';
+  const tableElement=document.getElementById('workPcTable');
   
   if(!headers || headers.length===0 || !data || data.length===0){
-    container.innerHTML='<p>Нет данных для отображения</p>';
+    tableElement.innerHTML='<p>Нет данных для отображения</p>';
     return;
   }
   
-  // Преобразуем данные в формат для GridJS
-  // data - это массив объектов, где ключи - это индексы или названия полей
-  const gridData=data.map(pc=>{
-    const values=Object.values(pc);
-    // Убеждаемся, что массив значений соответствует количеству заголовков
-    while(values.length < headers.length){
-      values.push('-');
-    }
-    return values;
+  // Очищаем таблицу перед инициализацией
+  $('#workPcTable').empty();
+  
+  // Создаем заголовки таблицы
+  const thead=$('#workPcTable thead');
+  thead.empty();
+  const headerRow=$('<tr></tr>');
+  headers.forEach(h=>{
+    headerRow.append($('<th></th>').text(h));
+  });
+  thead.append(headerRow);
+  
+  // Создаем тело таблицы
+  const tbody=$('#workPcTable tbody');
+  tbody.empty();
+  data.forEach(pc=>{
+    const row=$('<tr></tr>');
+    headers.forEach(h=>{
+      const cellValue=pc[h] !== undefined ? pc[h] : '-';
+      row.append($('<td></td>').text(cellValue));
+    });
+    tbody.append(row);
   });
   
-  // Создаем конфигурацию колонок с заголовками
-  const columns=headers.map(h=>({
-    name: h,
-    header: {
-      content: h,
-      style: {
-        'white-space': 'normal',
-        'text-align': 'left',
-        'word-wrap': 'break-word',
-        'max-width': '200px'
-      }
-    }
-  }));
+  // Уничтожаем предыдущий экземпляр DataTables если он существует
+  if(workPcTable){
+    workPcTable.destroy();
+    workPcTable=null;
+  }
   
-  // Инициализируем GridJS
-  workPcGrid=new gridjs.Grid({
-    columns: columns,
-    data: gridData,
-    search: {
-      keyword: '',
-      selector: (row, columnIndex) => {
-        // Разрешаем поиск по всем колонкам
-        return row[columnIndex];
+  // Инициализируем DataTables с SearchPanes
+  workPcTable=$('#workPcTable').DataTable({
+    dom: 'Pfrtip', // P - SearchPanes, f - filtering input, r - processing display, t - table, i - info, p - pagination
+    searchPanes: {
+      viewTotal: true,
+      cascadePanes: true,
+      dtOpts: {
+        searching: true
       }
     },
-    pagination: false,
-    sort: {
-      column: 0, // Сортировка по первому столбцу (Дата подключения)
-      desc: true // По убыванию (новые сверху)
-    },
-    autoWidth: false,
-    fixedHeader: true,
-    width: '100%',
-    style: {
-      table: {
-        'white-space': 'normal',
-        'word-wrap': 'break-word',
-        'table-layout': 'fixed'
-      },
-      th: {
-        'white-space': 'normal',
-        'word-wrap': 'break-word',
-        'vertical-align': 'middle'
-      },
-      td: {
-        'white-space': 'normal',
-        'word-wrap': 'break-word'
-      }
-    },
+    columns: headers.map(h=>({
+      title: h,
+      searchable: true
+    })),
     language: {
-      'search': {
-        'placeholder': 'Поиск по компьютерам...'
-      },
-      'noRecordsFound': 'Нет записей'
-    }
+      search: 'Поиск:',
+      lengthMenu: 'Показать _MENU_ записей',
+      info: 'Показано с _START_ по _END_ из _TOTAL_ записей',
+      infoEmpty: 'Нет записей',
+      infoFiltered: '(отфильтровано из _MAX_ записей)',
+      zeroRecords: 'Записи отсутствуют',
+      paginate: {
+        first: 'Первая',
+        last: 'Последняя',
+        next: 'Следующая',
+        previous: 'Предыдущая'
+      }
+    },
+    order: [[0, 'desc']], // Сортировка по первому столбцу по убыванию
+    pageLength: 25,
+    responsive: true,
+    autoWidth: false,
+    scrollX: true
   });
-  
-  workPcGrid.render(container);
 }
 
 document.getElementById('refreshWorkPcBtn').onclick=async()=>{

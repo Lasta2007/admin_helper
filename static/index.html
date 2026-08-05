@@ -6,6 +6,8 @@
 <title>Admin Helper</title>
 <link rel="stylesheet" href="css/style.css">
 <link href="css/lib/mermaid.min.css" rel="stylesheet" />
+<link href="css/lib/jquery.dataTables.min.css" rel="stylesheet" />
+<link href="css/lib/searchPanes.dataTables.min.css" rel="stylesheet" />
 </head>
 <body>
 <div class="sidebar">
@@ -55,10 +57,12 @@
       <h2>Рабочие компьютеры</h2>
       <div class="toolbar">
         <button id="refreshWorkPcBtn">Обновить</button>
-        <input type="text" id="workPcSearch" class="search-input" placeholder="Поиск по компьютерам...">
       </div>
     </div>
-    <div id="workPcTableContainer"></div>
+    <table id="workPcTable" class="display">
+      <thead></thead>
+      <tbody></tbody>
+    </table>
   </div>
 
   <div id="settingsView" class="hidden">
@@ -105,7 +109,9 @@
  </div>
 </div>
 
-<script src="js/lib/gridjs.umd.js"></script>
+<script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+<script src="js/lib/jquery.dataTables.min.js"></script>
+<script src="js/lib/dataTables.searchPanes.min.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
