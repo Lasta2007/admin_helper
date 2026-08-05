@@ -458,22 +458,43 @@ function renderWorkPcTable(data, headers){
       headerText.style.fontWeight='bold';
       headerText.style.whiteSpace='nowrap';
       
-      const filterInput=document.createElement('input');
-      filterInput.type='text';
-      filterInput.placeholder='Фильтр...';
-      filterInput.className='column-filter';
-      filterInput.dataset.columnIndex=index;
-      filterInput.style.width='100%';
-      filterInput.style.boxSizing='border-box';
-      filterInput.style.padding='2px';
-      filterInput.style.fontSize='12px';
+      const filterSelect=document.createElement('select');
+      filterSelect.className='column-filter';
+      filterSelect.dataset.columnIndex=index;
+      filterSelect.style.width='100%';
+      filterSelect.style.boxSizing='border-box';
+      filterSelect.style.padding='2px';
+      filterSelect.style.fontSize='12px';
       
-      filterInput.oninput=()=>{
+      // Добавляем опцию "Все"
+      const allOption=document.createElement('option');
+      allOption.value='';
+      allOption.textContent='Все';
+      filterSelect.appendChild(allOption);
+      
+      // Собираем уникальные значения для этой колонки
+      const uniqueValues=new Set();
+      data.forEach(pc=>{
+        const values=Object.values(pc);
+        if(index < values.length && values[index]){
+          uniqueValues.add(values[index]);
+        }
+      });
+      
+      // Сортируем уникальные значения и добавляем в select
+      Array.from(uniqueValues).sort().forEach(val=>{
+        const option=document.createElement('option');
+        option.value=val;
+        option.textContent=val;
+        filterSelect.appendChild(option);
+      });
+      
+      filterSelect.onchange=()=>{
         filterWorkPcTable();
       };
       
       th.appendChild(headerText);
-      th.appendChild(filterInput);
+      th.appendChild(filterSelect);
       theadRow.appendChild(th);
     });
   }
@@ -485,32 +506,51 @@ function filterWorkPcTable(data=allWorkPcData){
   const tbody=document.getElementById('workPcTable');
   tbody.innerHTML='';
   
-  // Получаем значения всех фильтров
+  // Получаем значения всех фильтров (теперь это select)
   const filters=[];
-  document.querySelectorAll('.column-filter').forEach(input=>{
-    filters.push(input.value.toLowerCase());
+  document.querySelectorAll('.column-filter').forEach(select=>{
+    filters.push(select.value);
   });
   
   // Глобальный поиск
   const globalSearchTerm=document.getElementById('workPcSearch').value.toLowerCase();
   
-  data.forEach(pc=>{
+  let filteredData=data.filter(pc=>{
     const values=Object.values(pc);
     
     // Проверка по глобальному поиску
     if(globalSearchTerm){
       const searchStr=values.join(' ').toLowerCase();
-      if(!searchStr.includes(globalSearchTerm)) return;
+      if(!searchStr.includes(globalSearchTerm)) return false;
     }
     
     // Проверка по фильтрам колонок
     for(let i=0; i<filters.length; i++){
       if(filters[i] && i<values.length){
-        if(!values[i].toLowerCase().includes(filters[i])) return;
+        if(values[i] !== filters[i]) return false;
       }
     }
     
+    return true;
+  });
+  
+  // Сортировка по дате авторизации (первая колонка) - свежие записи в начале
+  filteredData.sort((a, b)=>{
+    const valuesA=Object.values(a);
+    const valuesB=Object.values(b);
+    if(valuesA.length > 0 && valuesB.length > 0){
+      const dateA=new Date(valuesA[0]);
+      const dateB=new Date(valuesB[0]);
+      if(!isNaN(dateA) && !isNaN(dateB)){
+        return dateB - dateA; // По убыванию (свежие сначала)
+      }
+    }
+    return 0;
+  });
+  
+  filteredData.forEach(pc=>{
     const tr=document.createElement('tr');
+    const values=Object.values(pc);
     values.forEach(val=>{
       const td=document.createElement('td');
       td.textContent=val||'-';
@@ -521,7 +561,7 @@ function filterWorkPcTable(data=allWorkPcData){
 }
 
 document.getElementById('workPcSearch').oninput=()=>{
-  renderWorkPcTable(allWorkPcData, workPcHeaders);
+  filterWorkPcTable(allWorkPcData);
 };
 
 document.getElementById('refreshWorkPcBtn').onclick=async()=>{
