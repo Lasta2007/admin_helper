@@ -443,34 +443,37 @@ async function loadWorkPcData(){
 function renderWorkPcTable(data, headers){
   const tableElement=document.getElementById('workPcTable');
   
-  if(!headers || headers.length===0 || !data || data.length===0){
-    tableElement.innerHTML='<p>Нет данных для отображения</p>';
-    return;
-  }
-  
-  // Очищаем таблицу перед инициализацией
+  // Всегда создаем правильную структуру таблицы перед инициализацией DataTables
   $('#workPcTable').empty();
   
-  // Создаем заголовки таблицы
+  // Создаем заголовки таблицы даже если данных нет
   const thead=$('#workPcTable thead');
   thead.empty();
   const headerRow=$('<tr></tr>');
-  headers.forEach(h=>{
-    headerRow.append($('<th></th>').text(h));
-  });
+  
+  if(headers && headers.length>0){
+    headers.forEach(h=>{
+      headerRow.append($('<th></th>').text(h));
+    });
+  } else {
+    headerRow.append($('<th></th>').text('Нет данных'));
+  }
   thead.append(headerRow);
   
   // Создаем тело таблицы
   const tbody=$('#workPcTable tbody');
   tbody.empty();
-  data.forEach(pc=>{
-    const row=$('<tr></tr>');
-    headers.forEach(h=>{
-      const cellValue=pc[h] !== undefined ? pc[h] : '-';
-      row.append($('<td></td>').text(cellValue));
+  
+  if(data && data.length>0 && headers && headers.length>0){
+    data.forEach(pc=>{
+      const row=$('<tr></tr>');
+      headers.forEach(h=>{
+        const cellValue=pc[h] !== undefined ? pc[h] : '-';
+        row.append($('<td></td>').text(cellValue));
+      });
+      tbody.append(row);
     });
-    tbody.append(row);
-  });
+  }
   
   // Уничтожаем предыдущий экземпляр DataTables если он существует
   if(workPcTable){
@@ -485,10 +488,10 @@ function renderWorkPcTable(data, headers){
       indicators: false,
       handler: false
     },
-    columns: headers.map(h=>({
+    columns: headers && headers.length>0 ? headers.map(h=>({
       title: h,
       searchable: true
-    })),
+    })) : [{title: 'Нет данных', searchable: false}],
     language: {
       search: 'Поиск:',
       lengthMenu: 'Показать _MENU_ записей',
