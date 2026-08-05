@@ -1,42 +1,28 @@
 """
 Модуль WORK PC - парсинг файла log.txt с информацией о рабочих компьютерах.
 Файл содержит данные разделенные знаком |.
-Поля: Дата, Версия ОС, Версия ядра, Имя компьютера, Имя пользователя, 
-Тип получения IP адреса, IP адрес, Mac адрес, Материнская плата, 
-Свободное место HDD, SWAP, Процессор, Тип диска, Версия R7, Версия KAV, Версия CSP
+Первая строка - заголовки полей.
+Модуль проверяет в заданный интервал изменение времени модификации файла,
+и если оно изменилось - парсит файл. Данные не сохраняются в базу данных.
 """
 
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import os
 
-from database import get_connection, get_setting, set_setting
+from database import get_setting, set_setting
 
 logger = logging.getLogger('admin_helper')
 
-# Поля файла log.txt
-LOG_FIELDS = [
-    'date',              # Дата
-    'os_version',        # Версия ОС
-    'kernel_version',    # Версия ядра
-    'computer_name',     # Имя компьютера
-    'username',          # Имя пользователя
-    'ip_type',           # Тип получения IP адреса
-    'ip_address',        # IP адрес
-    'mac_address',       # Mac адрес
-    'motherboard',       # Материнская плата
-    'hdd_free',          # Свободное место HDD
-    'swap',              # SWAP
-    'cpu',               # Процессор
-    'disk_type',         # Тип диска
-    'r7_version',        # Версия R7
-    'kav_version',       # Версия KAV
-    'csp_version',       # Версия CSP
-]
+# Глобальная переменная для хранения последнего времени модификации файла
+_last_mtime: Optional[float] = None
+_last_parsed_data: List[Dict[str, str]] = []
+_last_headers: List[str] = []
 
 
-def parse_log_line(line: str) -> Optional[Dict[str, str]]:
+def parse_log_line(line: str, headers: List[str]) -> Optional[Dict[str, str]]:
     """
     Парсит одну строку из файла log.txt.
     Возвращает словарь с данными или None если строка некорректна.
@@ -47,38 +33,76 @@ def parse_log_line(line: str) -> Optional[Dict[str, str]]:
     
     parts = line.split('|')
     
-    # Ожидаем 15 или 16 полей (cprocsp может быть пустым в конце)
-    if len(parts) < 15:
-        logger.warning(f"[parse_log_line] Некорректная строка (ожидается минимум 15 полей, получено {len(parts)}): {line[:100]}")
+    # Количество полей должно соответствовать количеству заголовков
+    if len(parts) != len(headers):
+        logger.warning(f"[parse_log_line] Некорректная строка (ожидается {len(headers)} полей, получено {len(parts)}): {line[:100]}")
         return None
     
-    # Создаем словарь с данными
+    # Создаем словарь с данными используя заголовки из первой строки
     data = {}
-    for i, field in enumerate(LOG_FIELDS):
-        if i < len(parts):
-            data[field] = parts[i].strip()
-        else:
-            data[field] = ''
+    for i, header in enumerate(headers):
+        data[header.strip()] = parts[i].strip()
     
     return data
 
 
-def parse_log_file(file_path: str) -> List[Dict[str, str]]:
+def parse_log_file(file_path: str) -> tuple[List[Dict[str, str]], List[str]]:
     """
     Парсит весь файл log.txt.
-    Возвращает список словарей с данными.
+    Возвращает кортеж: (список словарей с данными, список заголовков).
+    Первая строка файла считается заголовком, если она не похожа на данные.
+    Если первая строка похожа на данные (начинается с даты), используются стандартные заголовки.
     """
     result = []
+    headers = []
+    
+    # Стандартные заголовки для файлов без заголовков
+    DEFAULT_HEADERS = [
+        'date', 'os_version', 'kernel_version', 'computer_name', 'username',
+        'ip_type', 'ip_address', 'mac_address', 'motherboard', 'hdd_free',
+        'swap', 'cpu', 'disk_type', 'r7_version', 'kav_version', 'csp_version'
+    ]
     
     try:
         path = Path(file_path)
         if not path.exists():
             logger.error(f"[parse_log_file] Файл не найден: {file_path}")
-            return result
+            return result, headers
         
         with open(path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                data = parse_log_line(line)
+            lines = f.readlines()
+            
+            if not lines:
+                logger.warning(f"[parse_log_file] Файл пуст: {file_path}")
+                return result, headers
+            
+            # Проверяем, является ли первая строка заголовком или данными
+            first_line = lines[0].strip()
+            first_parts = first_line.split('|')
+            
+            # Если первая строка начинается с даты (формат YYYY-MM-DD) и имеет 16 полей,
+            # считаем что это данные, а не заголовки
+            is_header = True
+            if len(first_parts) >= 15:
+                # Проверяем, похоже ли первое поле на дату
+                import re
+                if re.match(r'^\d{4}-\d{2}-\d{2}', first_parts[0]):
+                    is_header = False
+                    headers = DEFAULT_HEADERS
+                    logger.info(f"[parse_log_file] Первая строка похожа на данные, используем стандартные заголовки: {headers}")
+            
+            if is_header:
+                # Первая строка - заголовки
+                headers = [h.strip() for h in first_line.split('|')]
+                logger.info(f"[parse_log_file] Заголовки из файла: {headers}")
+                data_lines = lines[1:]
+            else:
+                # Первая строка - данные, используем стандартные заголовки
+                data_lines = lines
+            
+            # Парсим строки данных
+            for line_num, line in enumerate(data_lines, 1):
+                data = parse_log_line(line, headers)
                 if data:
                     result.append(data)
         
@@ -87,188 +111,141 @@ def parse_log_file(file_path: str) -> List[Dict[str, str]]:
     except Exception as e:
         logger.error(f"[parse_log_file] Ошибка при чтении файла {file_path}: {type(e).__name__}: {e}")
     
-    return result
+    return result, headers
 
 
-def init_work_pc_table():
+def get_file_mtime(file_path: str) -> Optional[float]:
     """
-    Инициализирует таблицу work_pc в базе данных.
-    Вызывается при миграции БД.
+    Получает время последней модификации файла.
+    Возвращает timestamp или None если файл не найден.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Проверяем существование таблицы
-    existing_tables = cursor.execute("""
-        SELECT name FROM sqlite_master WHERE type='table' AND name='work_pc'
-    """).fetchall()
-    
-    if not existing_tables:
-        cursor.execute("""
-        CREATE TABLE work_pc(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT DEFAULT '',
-            os_version TEXT DEFAULT '',
-            kernel_version TEXT DEFAULT '',
-            computer_name TEXT DEFAULT '',
-            username TEXT DEFAULT '',
-            ip_type TEXT DEFAULT '',
-            ip_address TEXT DEFAULT '',
-            mac_address TEXT DEFAULT '',
-            motherboard TEXT DEFAULT '',
-            hdd_free TEXT DEFAULT '',
-            swap TEXT DEFAULT '',
-            cpu TEXT DEFAULT '',
-            disk_type TEXT DEFAULT '',
-            r7_version TEXT DEFAULT '',
-            kav_version TEXT DEFAULT '',
-            csp_version TEXT DEFAULT '',
-            created_at TEXT DEFAULT ''
-        )
-        """)
-        logger.info("[init_work_pc_table] Таблица 'work_pc' создана")
-    
-    conn.commit()
-    conn.close()
-    logger.info("[init_work_pc_table] Инициализация таблицы work_pc завершена")
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            return None
+        return os.path.getmtime(file_path)
+    except Exception as e:
+        logger.error(f"[get_file_mtime] Ошибка при получении времени модификации файла {file_path}: {e}")
+        return None
 
 
-def get_work_pc_data() -> List[Dict[str, Any]]:
+def check_and_parse_log() -> Dict[str, Any]:
     """
-    Получает все данные из таблицы work_pc.
+    Проверяет изменение времени модификации файла log.txt и парсит его при необходимости.
+    Путь к файлу и интервал проверки берутся из настроек.
+    Возвращает данные из файла (без сохранения в БД).
     """
-    conn = get_connection()
-    conn.row_factory = sqlite3.Row
+    global _last_mtime, _last_parsed_data, _last_headers
     
-    rows = conn.execute("""
-        SELECT *
-        FROM work_pc
-        ORDER BY date DESC, computer_name
-    """).fetchall()
-    
-    conn.close()
-    
-    return [dict(r) for r in rows]
-
-
-def get_work_pc_by_computer(computer_name: str) -> List[Dict[str, Any]]:
-    """
-    Получает данные по конкретному компьютеру.
-    """
-    conn = get_connection()
-    conn.row_factory = sqlite3.Row
-    
-    rows = conn.execute("""
-        SELECT *
-        FROM work_pc
-        WHERE computer_name=?
-        ORDER BY date DESC
-    """, (computer_name,)).fetchall()
-    
-    conn.close()
-    
-    return [dict(r) for r in rows]
-
-
-def save_work_pc_data(data: List[Dict[str, str]]) -> int:
-    """
-    Сохраняет данные в таблицу work_pc.
-    Перед сохранением очищает таблицу.
-    Возвращает количество сохраненных записей.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Очищаем таблицу перед новым импортом
-    cursor.execute("DELETE FROM work_pc")
-    logger.info("[save_work_pc_data] Таблица work_pc очищена")
-    
-    # Вставляем новые данные
-    count = 0
-    for record in data:
-        try:
-            cursor.execute("""
-                INSERT INTO work_pc(
-                    date, os_version, kernel_version, computer_name, username,
-                    ip_type, ip_address, mac_address, motherboard, hdd_free,
-                    swap, cpu, disk_type, r7_version, kav_version, csp_version,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                record.get('date', ''),
-                record.get('os_version', ''),
-                record.get('kernel_version', ''),
-                record.get('computer_name', ''),
-                record.get('username', ''),
-                record.get('ip_type', ''),
-                record.get('ip_address', ''),
-                record.get('mac_address', ''),
-                record.get('motherboard', ''),
-                record.get('hdd_free', ''),
-                record.get('swap', ''),
-                record.get('cpu', ''),
-                record.get('disk_type', ''),
-                record.get('r7_version', ''),
-                record.get('kav_version', ''),
-                record.get('csp_version', ''),
-                now
-            ))
-            count += 1
-        except Exception as e:
-            logger.error(f"[save_work_pc_data] Ошибка при сохранении записи: {e}")
-    
-    conn.commit()
-    conn.close()
-    
-    logger.info(f"[save_work_pc_data] Сохранено {count} записей в таблицу work_pc")
-    return count
-
-
-def refresh_work_pc_data() -> Dict[str, Any]:
-    """
-    Обновляет данные в таблице work_pc из файла log.txt.
-    Путь к файлу берется из настроек.
-    """
     # Получаем путь к файлу из настроек
     log_path = get_setting('work_pc_log_path', '')
     
     if not log_path:
-        logger.error("[refresh_work_pc_data] Путь к файлу log.txt не указан в настройках")
+        logger.error("[check_and_parse_log] Путь к файлу log.txt не указан в настройках")
         return {
             "status": "error",
-            "message": "Путь к файлу log.txt не указан в настройках"
+            "message": "Путь к файлу log.txt не указан в настройках",
+            "data": [],
+            "headers": []
         }
     
     # Проверяем существование файла
     if not Path(log_path).exists():
-        logger.error(f"[refresh_work_pc_data] Файл не найден: {log_path}")
+        logger.error(f"[check_and_parse_log] Файл не найден: {log_path}")
         return {
             "status": "error",
-            "message": f"Файл не найден: {log_path}"
+            "message": f"Файл не найден: {log_path}",
+            "data": [],
+            "headers": []
         }
     
-    # Парсим файл
-    data = parse_log_file(log_path)
+    # Получаем текущее время модификации файла
+    current_mtime = get_file_mtime(log_path)
+    
+    if current_mtime is None:
+        return {
+            "status": "error",
+            "message": "Не удалось получить время модификации файла",
+            "data": [],
+            "headers": []
+        }
+    
+    # Проверяем изменился ли файл
+    if _last_mtime is not None and current_mtime == _last_mtime:
+        logger.debug(f"[check_and_parse_log] Файл не изменился, возвращаем закэшированные данные")
+        return {
+            "status": "ok",
+            "message": "Файл не изменился",
+            "data": _last_parsed_data,
+            "headers": _last_headers,
+            "file_changed": False
+        }
+    
+    # Файл изменился или это первый запуск - парсим его
+    logger.info(f"[check_and_parse_log] Файл изменился (старое mtime: {_last_mtime}, новое mtime: {current_mtime})")
+    
+    data, headers = parse_log_file(log_path)
+    
+    # Обновляем глобальные переменные
+    _last_mtime = current_mtime
+    _last_parsed_data = data
+    _last_headers = headers
     
     if not data:
-        logger.warning(f"[refresh_work_pc_data] Нет данных для сохранения из файла {log_path}")
+        logger.warning(f"[check_and_parse_log] Нет данных для возврата из файла {log_path}")
         return {
             "status": "warning",
             "message": "Файл пуст или содержит некорректные данные",
-            "records_count": 0
+            "data": [],
+            "headers": headers,
+            "file_changed": True
         }
-    
-    # Сохраняем данные в БД
-    count = save_work_pc_data(data)
     
     return {
         "status": "ok",
-        "message": f"Успешно обновлено {count} записей",
-        "records_count": count,
+        "message": f"Успешно распарсено {len(data)} записей",
+        "data": data,
+        "headers": headers,
+        "file_changed": True,
+        "records_count": len(data),
         "log_path": log_path
     }
+
+
+def get_work_pc_data() -> Dict[str, Any]:
+    """
+    Получает все данные из последнего распарсенного файла.
+    Возвращает данные и заголовки.
+    """
+    global _last_parsed_data, _last_headers
+    
+    return {
+        "status": "ok",
+        "data": _last_parsed_data,
+        "headers": _last_headers
+    }
+
+
+def get_work_pc_by_computer(computer_name: str) -> List[Dict[str, Any]]:
+    """
+    Получает данные по конкретному компьютеру из распарсенных данных.
+    Имя поля компьютера берется из заголовков (обычно 'computer_name' или 'Имя компьютера').
+    """
+    global _last_parsed_data, _last_headers
+    
+    # Определяем имя поля для имени компьютера
+    computer_field = None
+    for header in _last_headers:
+        if header.lower() in ['computer_name', 'имя компьютера', 'hostname', 'компьютер']:
+            computer_field = header
+            break
+    
+    if computer_field is None:
+        logger.warning(f"[get_work_pc_by_computer] Не найдено поле для имени компьютера в заголовках: {_last_headers}")
+        return []
+    
+    result = [record for record in _last_parsed_data if record.get(computer_field) == computer_name]
+    return result
 
 
 def get_work_pc_settings() -> Dict[str, str]:
@@ -285,8 +262,12 @@ def set_work_pc_log_path(path: str) -> bool:
     """
     Устанавливает путь к файлу log.txt в настройках.
     """
+    global _last_mtime
+    
     try:
         set_setting('work_pc_log_path', path)
+        # Сбрасываем время модификации чтобы при следующем запросе файл был распарсен заново
+        _last_mtime = None
         logger.info(f"[set_work_pc_log_path] Путь к файлу установлен: {path}")
         return True
     except Exception as e:
@@ -296,16 +277,24 @@ def set_work_pc_log_path(path: str) -> bool:
 
 def set_work_pc_update_interval(interval: int) -> bool:
     """
-    Устанавливает период обновления данных из файла log.txt (в минутах).
+    Устанавливает период проверки изменения файла log.txt (в минутах).
     """
     try:
         set_setting('work_pc_update_interval', str(interval))
-        logger.info(f"[set_work_pc_update_interval] Период обновления установлен: {interval} мин")
+        logger.info(f"[set_work_pc_update_interval] Период проверки установлен: {interval} мин")
         return True
     except Exception as e:
         logger.error(f"[set_work_pc_update_interval] Ошибка при сохранении периода: {e}")
         return False
 
 
-# Импортируем sqlite3 для корректной работы row_factory
-import sqlite3
+def reset_cache():
+    """
+    Сбрасывает кэш времени модификации и данных.
+    Используется при изменении пути к файлу.
+    """
+    global _last_mtime, _last_parsed_data, _last_headers
+    _last_mtime = None
+    _last_parsed_data = []
+    _last_headers = []
+    logger.info("[reset_cache] Кэш work_pc сброшен")
