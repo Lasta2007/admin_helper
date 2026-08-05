@@ -478,17 +478,21 @@ function renderWorkPcTable(data, headers){
   workPcGrid=new gridjs.Grid({
     columns: columns,
     data: gridData,
-    search: true,
-    pagination: {
-      enabled: true,
-      limit: 20,
-      summary: false
+    search: {
+      keyword: '',
+      selector: (row, columnIndex) => {
+        // Разрешаем поиск по всем колонкам
+        return row[columnIndex];
+      }
     },
-    sort: false,
+    pagination: false,
+    sort: {
+      column: 0, // Сортировка по первому столбцу (Дата подключения)
+      desc: true // По убыванию (новые сверху)
+    },
     autoWidth: false,
     fixedHeader: true,
     width: '100%',
-    height: '600px',
     style: {
       table: {
         'white-space': 'normal',
@@ -508,12 +512,6 @@ function renderWorkPcTable(data, headers){
     language: {
       'search': {
         'placeholder': 'Поиск по компьютерам...'
-      },
-      'pagination': {
-        'previous': '← Пред.',
-        'next': 'След. →',
-        'showing': 'Показано',
-        'results': () => ''
       },
       'noRecordsFound': 'Нет записей'
     }
