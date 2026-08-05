@@ -216,8 +216,27 @@ def get_work_pc_data() -> Dict[str, Any]:
     """
     Получает все данные из последнего распарсенного файла.
     Возвращает данные и заголовки.
+    Если данные еще не загружены, выполняет проверку и парсинг файла.
     """
     global _last_parsed_data, _last_headers
+    
+    # Если данные еще не загружены (пустой список И пустые заголовки), выполняем проверку и парсинг
+    if not _last_parsed_data and not _last_headers:
+        logger.info("[get_work_pc_data] Данные еще не загружены, выполняем check_and_parse_log()")
+        result = check_and_parse_log()
+        if result.get("status") in ["ok", "warning"]:
+            return {
+                "status": "ok",
+                "data": result.get("data", []),
+                "headers": result.get("headers", [])
+            }
+        else:
+            return {
+                "status": result.get("status", "error"),
+                "message": result.get("message", ""),
+                "data": [],
+                "headers": []
+            }
     
     return {
         "status": "ok",
