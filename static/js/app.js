@@ -478,12 +478,12 @@ function renderWorkPcTable(data, headers){
     workPcTable=null;
   }
   
-  // Инициализируем DataTables с columnControl (searchList)
+  // Инициализируем DataTables с SearchPanes
   workPcTable=$('#workPcTable').DataTable({
-    columnControl: ['order', ['searchList']],
-    ordering: {
-      indicators: false,
-      handler: false
+    dom: 'Prtip',
+    searchPanes: {
+      cascadePanes: true,
+      viewTotal: true
     },
     columns: headers.map(h=>({
       title: h,
@@ -501,6 +501,13 @@ function renderWorkPcTable(data, headers){
         last: 'Последняя',
         next: 'Следующая',
         previous: 'Предыдущая'
+      },
+      searchPanes: {
+        clearMessage: 'Очистить',
+        collapse: {0: 'Фильтры', _: 'Фильтры (%d)'},
+        emptyMessage: '<em>Нет данных</em>',
+        loadMessage: 'Загрузка фильтров...',
+        title: 'Активные фильтры - %d'
       }
     },
     order: [], // Отключаем сортировку по умолчанию
