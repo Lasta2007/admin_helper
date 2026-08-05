@@ -73,8 +73,15 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 /* WORK PC table filters */
 #workPcHeadersRow th{
   position: relative;
-  padding: 12px 8px;
+  padding: 8px;
   vertical-align: middle;
+}
+
+.work-pc-header-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
 }
 
 .column-filter{
@@ -90,12 +97,17 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   background: #e3f2fd;
 }
 
-[data-filter-icon]{
+.filter-icon{
   transition: all 0.2s ease;
   user-select: none;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: #e0e0e0;
+  cursor: pointer;
 }
 
-[data-filter-icon]:hover{
+.filter-icon:hover{
   background: #1976d2 !important;
   color: #fff !important;
 }
