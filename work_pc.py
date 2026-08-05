@@ -28,6 +28,7 @@ def parse_log_line(line: str, headers: List[str]) -> Optional[Dict[str, str]]:
     Возвращает словарь с данными или None если строка некорректна.
     Поддерживает гибкое количество полей - минимум 15, максимум len(headers).
     Если полей меньше чем заголовков, недостающие поля заполняются пустыми строками.
+    Очищает значения от префиксов: swap:, kasp:, cprocsp:, r7office:
     """
     line = line.strip()
     if not line:
@@ -51,10 +52,23 @@ def parse_log_line(line: str, headers: List[str]) -> Optional[Dict[str, str]]:
         logger.debug(f"[parse_log_line] Строка содержит {len(parts)} полей, ожидаемо {len(headers)}. Дополняем пустыми.")
         parts.extend([''] * (len(headers) - len(parts)))
     
+    # Функция для очистки значений от префиксов
+    def clean_value(value: str) -> str:
+        value = value.strip()
+        # Удаляем префиксы swap:, kasp:, cprocsp:, r7office: (с пробелом после двоеточия или без)
+        prefixes = ['swap:', 'kasp:', 'cprocsp:', 'r7office:']
+        for prefix in prefixes:
+            if value.startswith(prefix):
+                value = value[len(prefix):]
+                # Удаляем возможный пробел в начале
+                value = value.lstrip()
+                break
+        return value
+    
     # Создаем словарь с данными используя заголовки из первой строки
     data = {}
     for i, header in enumerate(headers):
-        data[header.strip()] = parts[i].strip()
+        data[header.strip()] = clean_value(parts[i])
     
     return data
 

@@ -441,16 +441,16 @@ async function loadWorkPcData(){
 
 function renderWorkPcTable(data, headers){
   const tbody=document.getElementById('workPcTable');
-  const thead=document.querySelector('#workPcView table thead tr');
+  const theadRow=document.getElementById('workPcHeadersRow');
   tbody.innerHTML='';
   
   // Если есть заголовки из файла, обновляем шапку таблицы
   if(headers && headers.length > 0){
-    thead.innerHTML='';
+    theadRow.innerHTML='';
     headers.forEach(h=>{
       const th=document.createElement('th');
       th.textContent=h;
-      thead.appendChild(th);
+      theadRow.appendChild(th);
     });
   }
   
