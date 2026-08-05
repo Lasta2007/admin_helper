@@ -31,7 +31,7 @@ from database import (
 
 # Импортируем функции модуля WORK PC
 from work_pc import (
-    refresh_work_pc_data,
+    check_and_parse_log,
     get_work_pc_data,
     get_work_pc_by_computer,
     get_work_pc_settings,
@@ -900,12 +900,12 @@ async def api_ping_single_host(ip: str, network_id: int = Query(...)):
 @router.get("/work_pc")
 def api_get_work_pc_data():
     """
-    Получает все данные из таблицы work_pc.
-    Возвращает список записей о рабочих компьютерах.
+    Получает все данные из последнего распарсенного файла log.txt.
+    Возвращает список записей о рабочих компьютерах и заголовки.
     """
     logger.info("[api_get_work_pc_data] Запрос данных work_pc")
-    data = get_work_pc_data()
-    return {"status": "ok", "data": data}
+    result = get_work_pc_data()
+    return result
 
 
 @router.get("/work_pc/{computer_name}")
@@ -923,11 +923,12 @@ def api_get_work_pc_by_computer(computer_name: str):
 @router.post("/work_pc/refresh")
 def api_refresh_work_pc_data():
     """
-    Обновляет данные в таблице work_pc из файла log.txt.
+    Проверяет изменение файла log.txt и парсит его при необходимости.
     Путь к файлу берется из настроек.
+    Данные не сохраняются в базу данных.
     """
-    logger.info("[api_refresh_work_pc_data] Запрос на обновление данных work_pc")
-    result = refresh_work_pc_data()
+    logger.info("[api_refresh_work_pc_data] Проверка и обновление данных work_pc")
+    result = check_and_parse_log()
     
     if result["status"] == "error":
         raise HTTPException(status_code=400, detail=result["message"])
