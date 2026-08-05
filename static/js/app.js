@@ -464,14 +464,16 @@ function renderWorkPcTable(data, headers){
   const tbody=$('#workPcTable tbody');
   tbody.empty();
   
+  // Преобразуем данные в формат для DataTables (массив массивов)
+  const tableData=[];
   if(data && data.length>0 && headers && headers.length>0){
     data.forEach(pc=>{
-      const row=$('<tr></tr>');
+      const row=[];
       headers.forEach(h=>{
         const cellValue=pc[h] !== undefined ? pc[h] : '-';
-        row.append($('<td></td>').text(cellValue));
+        row.push(cellValue);
       });
-      tbody.append(row);
+      tableData.push(row);
     });
   }
   
@@ -483,6 +485,7 @@ function renderWorkPcTable(data, headers){
   
   // Инициализируем DataTables с columnControl и searchList
   workPcTable=$('#workPcTable').DataTable({
+    data: tableData,
     columnControl: ['order', ['searchList']],
     ordering: {
       indicators: false,
