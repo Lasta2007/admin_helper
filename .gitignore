@@ -12,9 +12,9 @@ target/
 .venv/
 venv/
 node_modules/
-.julia/
-zig*/
-.deps/
+.mypy_cache/
+.pytest_cache/
+.gradle/
 
 # Logs and temp files
 *.log
@@ -30,10 +30,8 @@ zig*/
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# OS
+# System files
 .DS_Store
 Thumbs.db
 
@@ -42,15 +40,7 @@ coverage/
 htmlcov/
 .coverage
 
-# Package manager caches
-.npm/
-.yarn/
-.pip/
-.mypy_cache/
-.pytest_cache/
-.gradle/
-
-# Archives
+# Compressed files
 *.zip
 *.gz
 *.tar
@@ -69,4 +59,8 @@ htmlcov/
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
