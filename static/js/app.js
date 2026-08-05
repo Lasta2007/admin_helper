@@ -450,21 +450,46 @@ function renderWorkPcTable(data, headers){
     headers.forEach((h, index)=>{
       const th=document.createElement('th');
       th.style.display='flex';
-      th.style.flexDirection='column';
-      th.style.gap='5px';
+      th.style.alignItems='center';
+      th.style.gap='8px';
+      th.style.whiteSpace='nowrap';
       
       const headerText=document.createElement('span');
       headerText.textContent=h;
       headerText.style.fontWeight='bold';
-      headerText.style.whiteSpace='nowrap';
       
+      // Контейнер для фильтра
+      const filterContainer=document.createElement('div');
+      filterContainer.style.position='relative';
+      filterContainer.style.display='inline-block';
+      
+      // Значок фильтра
+      const filterIcon=document.createElement('span');
+      filterIcon.textContent='🔽';
+      filterIcon.style.cursor='pointer';
+      filterIcon.style.fontSize='14px';
+      filterIcon.style.padding='2px 6px';
+      filterIcon.style.borderRadius='4px';
+      filterIcon.style.background='#e0e0e0';
+      filterIcon.title='Фильтр';
+      
+      // Выпадающий список (скрыт по умолчанию)
       const filterSelect=document.createElement('select');
       filterSelect.className='column-filter';
       filterSelect.dataset.columnIndex=index;
-      filterSelect.style.width='100%';
-      filterSelect.style.boxSizing='border-box';
-      filterSelect.style.padding='2px';
+      filterSelect.style.display='none';
+      filterSelect.style.position='absolute';
+      filterSelect.style.top='100%';
+      filterSelect.style.left='0';
+      filterSelect.style.zIndex='1000';
+      filterSelect.style.padding='4px';
       filterSelect.style.fontSize='12px';
+      filterSelect.style.border='1px solid #ccc';
+      filterSelect.style.borderRadius='4px';
+      filterSelect.style.background='#fff';
+      filterSelect.style.minWidth='150px';
+      filterSelect.style.maxHeight='200px';
+      filterSelect.style.overflowY='auto';
       
       // Добавляем опцию "Все"
       const allOption=document.createElement('option');
@@ -490,14 +515,48 @@ function renderWorkPcTable(data, headers){
       });
       
       filterSelect.onchange=()=>{
+        filterSelect.style.display='none';
+        filterIcon.style.background='#e0e0e0';
         filterWorkPcTable();
       };
       
+      // Показываем/скрываем фильтр по клику на значок
+      filterIcon.onclick=(e)=>{
+        e.stopPropagation();
+        const isVisible=filterSelect.style.display==='block';
+        // Скрываем все остальные фильтры
+        document.querySelectorAll('.column-filter').forEach(s=>s.style.display='none');
+        document.querySelectorAll('[data-filter-icon]').forEach(icon=>icon.style.background='#e0e0e0');
+        
+        if(!isVisible){
+          filterSelect.style.display='block';
+          filterIcon.style.background='#1976d2';
+          filterIcon.style.color='#fff';
+        }
+      };
+      
+      filterSelect.dataset.filterIcon='true';
+      filterIcon.dataset.filterIcon='true';
+      
+      filterContainer.appendChild(filterIcon);
+      filterContainer.appendChild(filterSelect);
+      
       th.appendChild(headerText);
-      th.appendChild(filterSelect);
+      th.appendChild(filterContainer);
       theadRow.appendChild(th);
     });
   }
+  
+  // Закрываем фильтры при клике вне таблицы
+  document.addEventListener('click', (e)=>{
+    if(!e.target.closest('#workPcView')){
+      document.querySelectorAll('.column-filter').forEach(s=>s.style.display='none');
+      document.querySelectorAll('[data-filter-icon]').forEach(icon=>{
+        icon.style.background='#e0e0e0';
+        icon.style.color='inherit';
+      });
+    }
+  });
   
   filterWorkPcTable(data);
 }

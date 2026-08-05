@@ -1,3 +1,4 @@
+```gitignore
 # Compiled and build artifacts
 *.pyc
 __pycache__/
@@ -22,29 +23,26 @@ venv/
 dist/
 build/
 target/
-
-# Logs and temp files
 *.log
-*.tmp
-*.swp
-*.swo
+coverage/
+htmlcov/
+*.coverage
 
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
 
 # System files
 .DS_Store
 Thumbs.db
 
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Python specific
+# Cache directories
 .mypy_cache/
 .pytest_cache/
+.gradle/
 
 # Compressed files
 *.zip
@@ -69,3 +67,4 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+```
