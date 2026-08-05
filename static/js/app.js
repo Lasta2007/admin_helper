@@ -444,26 +444,74 @@ function renderWorkPcTable(data, headers){
   const theadRow=document.getElementById('workPcHeadersRow');
   tbody.innerHTML='';
   
-  // Если есть заголовки из файла, обновляем шапку таблицы
+  // Если есть заголовки из файла, обновляем шапку таблицы с фильтрами
   if(headers && headers.length > 0){
     theadRow.innerHTML='';
-    headers.forEach(h=>{
+    headers.forEach((h, index)=>{
       const th=document.createElement('th');
-      th.textContent=h;
+      th.style.display='flex';
+      th.style.flexDirection='column';
+      th.style.gap='5px';
+      
+      const headerText=document.createElement('span');
+      headerText.textContent=h;
+      headerText.style.fontWeight='bold';
+      headerText.style.whiteSpace='nowrap';
+      
+      const filterInput=document.createElement('input');
+      filterInput.type='text';
+      filterInput.placeholder='Фильтр...';
+      filterInput.className='column-filter';
+      filterInput.dataset.columnIndex=index;
+      filterInput.style.width='100%';
+      filterInput.style.boxSizing='border-box';
+      filterInput.style.padding='2px';
+      filterInput.style.fontSize='12px';
+      
+      filterInput.oninput=()=>{
+        filterWorkPcTable();
+      };
+      
+      th.appendChild(headerText);
+      th.appendChild(filterInput);
       theadRow.appendChild(th);
     });
   }
   
-  const searchTerm=document.getElementById('workPcSearch').value.toLowerCase();
+  filterWorkPcTable(data);
+}
+
+function filterWorkPcTable(data=allWorkPcData){
+  const tbody=document.getElementById('workPcTable');
+  tbody.innerHTML='';
+  
+  // Получаем значения всех фильтров
+  const filters=[];
+  document.querySelectorAll('.column-filter').forEach(input=>{
+    filters.push(input.value.toLowerCase());
+  });
+  
+  // Глобальный поиск
+  const globalSearchTerm=document.getElementById('workPcSearch').value.toLowerCase();
   
   data.forEach(pc=>{
-    // Поиск по всем полям
-    const searchStr=Object.values(pc).join(' ').toLowerCase();
-    if(searchTerm && !searchStr.includes(searchTerm)) return;
+    const values=Object.values(pc);
+    
+    // Проверка по глобальному поиску
+    if(globalSearchTerm){
+      const searchStr=values.join(' ').toLowerCase();
+      if(!searchStr.includes(globalSearchTerm)) return;
+    }
+    
+    // Проверка по фильтрам колонок
+    for(let i=0; i<filters.length; i++){
+      if(filters[i] && i<values.length){
+        if(!values[i].toLowerCase().includes(filters[i])) return;
+      }
+    }
     
     const tr=document.createElement('tr');
-    // Используем порядок ключей из объекта pc для отображения
-    Object.values(pc).forEach(val=>{
+    values.forEach(val=>{
       const td=document.createElement('td');
       td.textContent=val||'-';
       tr.appendChild(td);
