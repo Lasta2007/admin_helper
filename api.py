@@ -39,6 +39,15 @@ from work_pc import (
     set_work_pc_update_interval,
 )
 
+# Импортируем функции модуля ALD Pro
+from ald_pro import (
+    get_settings as get_aldpro_settings,
+    save_settings as save_aldpro_settings,
+    test_connection as test_aldpro_connection,
+    get_organizational_units,
+    get_organizational_unit_users,
+)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -105,6 +114,18 @@ class WorkPcLogPathUpdate(BaseModel):
 
 class WorkPcUpdateIntervalUpdate(BaseModel):
     update_interval: int
+
+
+class AldProSettings(BaseModel):
+    url: str
+    login: str
+    password: str
+
+
+class AldProConnectionTest(BaseModel):
+    url: str
+    login: str
+    password: str
 
 
 def validate_cidr(cidr: str):
@@ -983,3 +1004,48 @@ def api_refresh_work_pc_data():
     
     return result
 
+
+
+# ============================================================================
+# ALD Pro API endpoints
+# ============================================================================
+
+@router.get("/aldpro/settings")
+def api_get_aldpro_settings():
+    """Получить настройки ALD Pro."""
+    return get_aldpro_settings()
+
+
+@router.post("/aldpro/settings")
+def api_save_aldpro_settings(settings: AldProSettings):
+    """Сохранить настройки ALD Pro."""
+    if save_aldpro_settings(settings.url, settings.login, settings.password):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Ошибка сохранения настроек")
+
+
+@router.post("/aldpro/test-connection")
+async def api_test_aldpro_connection(test_data: AldProConnectionTest):
+    """Проверить подключение к ALD Pro API."""
+    result = await test_aldpro_connection(test_data.url, test_data.login, test_data.password)
+    if result.get('success'):
+        return result
+    raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка подключения'))
+
+
+@router.get("/aldpro/organizational-units")
+async def api_get_organizational_units():
+    """Получить список организационных подразделений ALD Pro."""
+    result = await get_organizational_units()
+    if result.get('success'):
+        return result
+    raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка получения данных'))
+
+
+@router.get("/aldpro/organizational-units/{ou_dn}/users-list")
+async def api_get_organizational_unit_users(ou_dn: str):
+    """Получить список пользователей подразделения ALD Pro."""
+    result = await get_organizational_unit_users(ou_dn)
+    if result.get('success'):
+        return result
+    raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка получения данных'))

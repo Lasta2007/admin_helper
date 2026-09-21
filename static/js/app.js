@@ -537,3 +537,242 @@ document.getElementById('refreshWorkPcBtn').onclick=async()=>{
     alert('Ошибка при обновлении данных');
   }
 };
+
+// ALD Pro модуль
+let aldProSettings = {
+  url: '',
+  login: '',
+  password: '',
+  cookies: ''
+};
+let selectedOuDn = null;
+
+// Загрузка настроек ALD Pro при старте
+async function loadAldProSettings() {
+  try {
+    const res = await fetch('/api/aldpro/settings');
+    if (res.ok) {
+      const data = await res.json();
+      aldProSettings = data;
+      document.getElementById('aldProUrlInput').value = aldProSettings.url || '';
+      document.getElementById('aldProLoginInput').value = aldProSettings.login || '';
+      document.getElementById('aldProPasswordInput').value = aldProSettings.password || '';
+    }
+  } catch (e) {
+    console.error('Ошибка загрузки настроек ALD Pro:', e);
+  }
+}
+
+// Сохранение настроек ALD Pro
+document.getElementById('saveAldProSettingsBtn').onclick = async () => {
+  const settings = {
+    url: document.getElementById('aldProUrlInput').value.trim(),
+    login: document.getElementById('aldProLoginInput').value.trim(),
+    password: document.getElementById('aldProPasswordInput').value
+  };
+  
+  try {
+    const res = await fetch('/api/aldpro/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(settings)
+    });
+    
+    if (res.ok) {
+      alert('Настройки ALD Pro сохранены');
+      aldProSettings = settings;
+    } else {
+      const error = await res.json();
+      alert('Ошибка сохранения: ' + (error.detail || 'Неизвестная ошибка'));
+    }
+  } catch (e) {
+    console.error('Ошибка сохранения настроек ALD Pro:', e);
+    alert('Ошибка при сохранении настроек');
+  }
+};
+
+// Проверка подключения к ALD Pro
+document.getElementById('testAldProConnectionBtn').onclick = async () => {
+  const settings = {
+    url: document.getElementById('aldProUrlInput').value.trim(),
+    login: document.getElementById('aldProLoginInput').value.trim(),
+    password: document.getElementById('aldProPasswordInput').value
+  };
+  
+  try {
+    const res = await fetch('/api/aldpro/test-connection', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(settings)
+    });
+    
+    const result = await res.json();
+    if (res.ok && result.success) {
+      alert('Подключение успешно! Сессия установлена.');
+      aldProSettings = {...settings, cookies: result.cookies};
+    } else {
+      alert('Ошибка подключения: ' + (result.detail || 'Неизвестная ошибка'));
+    }
+  } catch (e) {
+    console.error('Ошибка проверки подключения:', e);
+    alert('Ошибка при проверке подключения');
+  }
+};
+
+// Показать страницу ALD Pro
+function showAldPro() {
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  document.getElementById('aldProNav').classList.add('active');
+  document.getElementById('netView').classList.add('hidden');
+  document.getElementById('hostView').classList.add('hidden');
+  document.getElementById('settingsView').classList.add('hidden');
+  document.getElementById('workPcView').classList.add('hidden');
+  document.getElementById('aldProView').classList.remove('hidden');
+  
+  loadAldProOrganizationalUnits();
+}
+
+document.getElementById('aldProNav').onclick = () => showAldPro();
+
+document.getElementById('aldProBackBtn').onclick = (e) => {
+  e.preventDefault();
+  showIPAM();
+};
+
+document.getElementById('refreshAldProBtn').onclick = () => {
+  loadAldProOrganizationalUnits();
+};
+
+// Загрузка организационных подразделений ALD Pro
+async function loadAldProOrganizationalUnits() {
+  const treeContainer = document.getElementById('aldProTree');
+  const usersContainer = document.getElementById('aldProUsers');
+  
+  treeContainer.innerHTML = '<div class="ald-pro-loading">Загрузка данных ALD Pro...</div>';
+  usersContainer.innerHTML = '';
+  
+  try {
+    const res = await fetch('/api/aldpro/organizational-units');
+    if (!res.ok) {
+      const error = await res.json();
+      treeContainer.innerHTML = '<div class="ald-pro-error">Ошибка: ' + (error.detail || 'Не удалось загрузить подразделения') + '</div>';
+      return;
+    }
+    
+    const result = await res.json();
+    if (result.success && result.data) {
+      renderAldProTree(result.data, treeContainer);
+    } else {
+      treeContainer.innerHTML = '<div class="ald-pro-error">Ошибка получения данных</div>';
+    }
+  } catch (e) {
+    console.error('Ошибка загрузки подразделений ALD Pro:', e);
+    treeContainer.innerHTML = '<div class="ald-pro-error">Ошибка сети: ' + e.message + '</div>';
+  }
+}
+
+// Рендеринг дерева подразделений
+function renderAldProTree(units, container) {
+  if (!units || units.length === 0) {
+    container.innerHTML = '<div class="ald-pro-loading">Подразделения не найдены</div>';
+    return;
+  }
+  
+  let html = '<h3>Организационные подразделения</h3><ul>';
+  
+  units.forEach(unit => {
+    const displayName = unit.organizationunitlistitem_display_name || unit.organizationunitlistitem_ou || 'Без названия';
+    const isLeaf = unit.organizationunitlistitem_is_leaf;
+    const icon = isLeaf ? '📁' : '📂';
+    
+    html += `<li>
+      <div class="ald-pro-item" data-dn="${unit.organizationunitlistitem_dn}" data-name="${displayName}">
+        <span class="ald-pro-icon">${icon}</span>
+        <span class="ald-pro-name">${displayName}</span>
+      </div>
+    </li>`;
+  });
+  
+  html += '</ul>';
+  container.innerHTML = html;
+  
+  // Обработчики кликов по подразделениям
+  container.querySelectorAll('.ald-pro-item').forEach(item => {
+    item.onclick = () => {
+      container.querySelectorAll('.ald-pro-item').forEach(i => i.classList.remove('selected'));
+      item.classList.add('selected');
+      selectedOuDn = item.dataset.dn;
+      loadAldProUsers(selectedOuDn);
+    };
+  });
+}
+
+// Загрузка пользователей подразделения
+async function loadAldProUsers(ouDn) {
+  const usersContainer = document.getElementById('aldProUsers');
+  
+  if (!ouDn) {
+    usersContainer.innerHTML = '<div class="ald-pro-loading">Выберите подразделение для просмотра пользователей</div>';
+    return;
+  }
+  
+  usersContainer.innerHTML = '<div class="ald-pro-loading">Загрузка пользователей...</div>';
+  
+  try {
+    // Кодируем DN для URL
+    const encodedDn = encodeURIComponent(ouDn);
+    const res = await fetch(`/api/aldpro/organizational-units/${encodedDn}/users-list`);
+    
+    if (!res.ok) {
+      const error = await res.json();
+      usersContainer.innerHTML = '<div class="ald-pro-error">Ошибка: ' + (error.detail || 'Не удалось загрузить пользователей') + '</div>';
+      return;
+    }
+    
+    const result = await res.json();
+    if (result.success && result.data) {
+      renderAldProUsers(result.data, usersContainer);
+    } else {
+      usersContainer.innerHTML = '<div class="ald-pro-loading">Пользователи не найдены</div>';
+    }
+  } catch (e) {
+    console.error('Ошибка загрузки пользователей ALD Pro:', e);
+    usersContainer.innerHTML = '<div class="ald-pro-error">Ошибка сети: ' + e.message + '</div>';
+  }
+}
+
+// Рендеринг таблицы пользователей
+function renderAldProUsers(users, container) {
+  if (!users || users.length === 0) {
+    container.innerHTML = '<h3>Пользователи</h3><div class="ald-pro-loading">Пользователи не найдены</div>';
+    return;
+  }
+  
+  let html = '<h3>Пользователи (' + users.length + ')</h3>';
+  html += '<table><thead><tr><th>Логин</th><th>ФИО</th><th>Должность</th><th>Статус</th></tr></thead><tbody>';
+  
+  users.forEach(user => {
+    const login = user.userlistitem_login || '-';
+    const fullName = user.userlistitem_common_name || '-';
+    const title = user.userlistitem_title || '-';
+    const locked = user.userlistitem_locked;
+    const statusHtml = locked 
+      ? '<span style="color:#f44336">🔒 Заблокирован</span>' 
+      : '<span style="color:#4caf50">✓ Активен</span>';
+    
+    html += `<tr>
+      <td>${login}</td>
+      <td>${fullName}</td>
+      <td>${title}</td>
+      <td>${statusHtml}</td>
+    </tr>`;
+  });
+  
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// Загружаем настройки ALD Pro при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+  loadAldProSettings();
+});
