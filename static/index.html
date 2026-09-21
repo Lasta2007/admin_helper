@@ -13,6 +13,7 @@
   <div class="logo">Admin Helper</div>
   <div class="nav-item" id="ipamNav">IPAM</div>
   <div class="nav-item" id="workPcNav">WORK PC</div>
+  <div class="nav-item" id="aldProNav">ALD Pro</div>
   <div class="nav-item" id="settingsNav">Настройки</div>
 </div>
 
@@ -89,8 +90,32 @@
       <input id="workPcUpdateIntervalInput" type="number" min="1" step="1">
       <button id="saveWorkPcSettingsBtn">Сохранить настройки WORK PC</button>
       
+      <h3>ALD Pro API настройки</h3>
+      <label>URL ALD Pro сервера</label>
+      <input id="aldProUrlInput" type="text" placeholder="https://aldpro.example.ru/ad">
+      <label>Логин</label>
+      <input id="aldProLoginInput" type="text" placeholder="user01">
+      <label>Пароль</label>
+      <input id="aldProPasswordInput" type="password" placeholder="********">
+      <button id="testAldProConnectionBtn">Проверить подключение</button>
+      <button id="saveAldProSettingsBtn">Сохранить настройки ALD Pro</button>
+      
       <button id="saveSettingsBtn" style="margin-top: 20px;">Сохранить настройки IPAM</button>
     </div>
+  </div>
+</div>
+
+<div id="aldProView" class="hidden">
+  <div class="header">
+    <a id="aldProBackBtn" class="back" href="#">&larr; Назад к IPAM</a>
+    <h2>ALD Pro - Организационные подразделения</h2>
+    <div class="toolbar">
+      <button id="refreshAldProBtn">Обновить</button>
+    </div>
+  </div>
+  <div id="aldProContent">
+    <div id="aldProTree" class="ald-pro-tree"></div>
+    <div id="aldProUsers" class="ald-pro-users"></div>
   </div>
 </div>
 
