@@ -111,7 +111,7 @@ async def get_organizational_units() -> Dict[str, Any]:
     """
     Получить дерево организационных подразделений.
     
-    GET /api/ds/organizationalunits/catalogue/children
+    GET /api/ds/organizational-units/catalogue/children
     
     Возвращает готовую иерархическую структуру подразделения.
     """
@@ -121,7 +121,7 @@ async def get_organizational_units() -> Dict[str, Any]:
     
     try:
         # Используем каталожный API для получения дерева подразделений
-        response = await client.get("/api/ds/organizationalunits/catalogue/children")
+        response = await client.get("/api/ds/organizational-units/catalogue/children")
         if response.status_code == 200:
             data = response.json()
             if data.get('success'):
