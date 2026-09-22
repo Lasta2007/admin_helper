@@ -136,8 +136,41 @@ async def get_organizational_units() -> Dict[str, Any]:
                 logger.info(f"Количество элементов в data: {len(data.get('data', []))}")
                 if len(data.get('data', [])) > 0:
                     logger.info(f"Первый элемент: {data['data'][0]}")
+            
             if data.get('success'):
-                return {'success': True, 'data': data.get('data', [])}
+                raw_data = data.get('data', [])
+                
+                # Преобразуем формат tree_node в ожидаемый формат
+                transformed_data = []
+                for item in raw_data:
+                    tree_node = item.get('tree_node', {})
+                    if tree_node:
+                        transformed_item = {
+                            'organizationunitlistitem_dn': tree_node.get('treenode_dn', ''),
+                            'organizationunitlistitem_parent_dn': tree_node.get('treenode_parent_dn', ''),
+                            'organizationunitlistitem_display_name': tree_node.get('treenode_display_name', ''),
+                            'organizationunitlistitem_is_leaf': tree_node.get('treenode_is_leaf', False),
+                            'organizationunitlistitem_ou': tree_node.get('treenode_display_name', ''),
+                        }
+                        # Рекурсивно обрабатываем детей если они есть
+                        children = tree_node.get('children', [])
+                        if children:
+                            transformed_item['children'] = []
+                            for child in children:
+                                child_tree_node = child.get('tree_node', {})
+                                if child_tree_node:
+                                    transformed_child = {
+                                        'organizationunitlistitem_dn': child_tree_node.get('treenode_dn', ''),
+                                        'organizationunitlistitem_parent_dn': child_tree_node.get('treenode_parent_dn', ''),
+                                        'organizationunitlistitem_display_name': child_tree_node.get('treenode_display_name', ''),
+                                        'organizationunitlistitem_is_leaf': child_tree_node.get('treenode_is_leaf', False),
+                                        'organizationunitlistitem_ou': child_tree_node.get('treenode_display_name', ''),
+                                    }
+                                    transformed_item['children'].append(transformed_child)
+                        transformed_data.append(transformed_item)
+                
+                logger.info(f"Преобразованные данные: {transformed_data}")
+                return {'success': True, 'data': transformed_data}
             else:
                 logger.warning(f"ALD Pro вернул success=false: {data}")
                 return data
