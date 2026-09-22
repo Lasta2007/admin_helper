@@ -1,5 +1,5 @@
 """
-Модуль для работы с ALD Pro 3.0.0 API
+Модуль для работы с ALD Pro 3.2.0 API
 """
 import httpx
 import logging
