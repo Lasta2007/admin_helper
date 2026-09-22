@@ -122,17 +122,20 @@ async def get_organizational_units() -> Dict[str, Any]:
     try:
         # Используем каталожный API для получения дерева подразделений
         endpoint = "/api/ds/organizational-units/catalogue/children"
-        logger.debug(f"Запрос к ALD Pro: GET {endpoint}")
+        logger.info(f"Запрос к ALD Pro: GET {endpoint}")
         response = await client.get(endpoint)
         
         logger.info(f"Статус ответа: {response.status_code}")
-        logger.debug(f"Тело ответа: {response.text[:500]}")
+        logger.info(f"Тело ответа (полное): {response.text}")
         
         if response.status_code == 200:
             data = response.json()
-            logger.debug(f"Распарсенный JSON: success={data.get('success')}, data type={type(data.get('data'))}")
+            logger.info(f"Распарсенный JSON: {data}")
+            logger.info(f"Keys в ответе: {list(data.keys()) if isinstance(data, dict) else 'не dict'}")
             if isinstance(data.get('data'), list):
-                logger.debug(f"Количество элементов в data: {len(data.get('data', []))}")
+                logger.info(f"Количество элементов в data: {len(data.get('data', []))}")
+                if len(data.get('data', [])) > 0:
+                    logger.info(f"Первый элемент: {data['data'][0]}")
             if data.get('success'):
                 return {'success': True, 'data': data.get('data', [])}
             else:
