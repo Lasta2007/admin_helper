@@ -109,22 +109,23 @@ async def _get_authenticated_client() -> Optional[httpx.AsyncClient]:
 
 async def get_organizational_units() -> Dict[str, Any]:
     """
-    Получить список организационных подразделений.
+    Получить дерево организационных подразделений.
     
-    GET /api/ds/organizational-units
+    GET /api/ds/organizationalunits/catalogue/children
+    
+    Возвращает готовую иерархическую структуру подразделения.
     """
     client = await _get_authenticated_client()
     if not client:
         return {'success': False, 'detail': 'ALD Pro не настроен'}
     
     try:
-        response = await client.get("/api/ds/organizational-units")
+        # Используем каталожный API для получения дерева подразделений
+        response = await client.get("/api/ds/organizationalunits/catalogue/children")
         if response.status_code == 200:
             data = response.json()
-            # Преобразуем плоский список в иерархическое дерево
-            if data.get('success') and data.get('data'):
-                tree_data = build_ou_tree(data['data'])
-                return {'success': True, 'data': tree_data}
+            if data.get('success'):
+                return {'success': True, 'data': data.get('data', [])}
             return data
         else:
             logger.warning(f"ALD Pro вернул статус {response.status_code} при получении подразделений")
