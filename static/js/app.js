@@ -679,32 +679,50 @@ function renderAldProTree(units, container) {
   }
   
   let html = '<h3>Организационные подразделения</h3><ul>';
-  
-  units.forEach(unit => {
-    const displayName = unit.organizationunitlistitem_display_name || unit.organizationunitlistitem_ou || 'Без названия';
-    const isLeaf = unit.organizationunitlistitem_is_leaf;
-    const icon = isLeaf ? '📁' : '📂';
-    
-    html += `<li>
-      <div class="ald-pro-item" data-dn="${unit.organizationunitlistitem_dn}" data-name="${displayName}">
-        <span class="ald-pro-icon">${icon}</span>
-        <span class="ald-pro-name">${displayName}</span>
-      </div>
-    </li>`;
-  });
-  
+  html += renderAldProTreeRecursive(units);
   html += '</ul>';
   container.innerHTML = html;
   
   // Обработчики кликов по подразделениям
   container.querySelectorAll('.ald-pro-item').forEach(item => {
-    item.onclick = () => {
+    item.onclick = (e) => {
+      e.stopPropagation();
       container.querySelectorAll('.ald-pro-item').forEach(i => i.classList.remove('selected'));
       item.classList.add('selected');
       selectedOuDn = item.dataset.dn;
       loadAldProUsers(selectedOuDn);
     };
   });
+}
+
+// Рекурсивная функция для рендеринга дерева
+function renderAldProTreeRecursive(units) {
+  if (!units || units.length === 0) return '';
+  
+  let html = '';
+  units.forEach(unit => {
+    const displayName = unit.organizationunitlistitem_display_name || unit.organizationunitlistitem_ou || 'Без названия';
+    const isLeaf = unit.organizationunitlistitem_is_leaf;
+    const icon = isLeaf ? '📁' : '📂';
+    const hasChildren = unit.children && unit.children.length > 0;
+    
+    html += `<li>`;
+    html += `<div class="ald-pro-item" data-dn="${unit.organizationunitlistitem_dn}" data-name="${displayName}">`;
+    html += `<span class="ald-pro-icon">${icon}</span>`;
+    html += `<span class="ald-pro-name">${displayName}</span>`;
+    html += `</div>`;
+    
+    // Рекурсивно рендерим дочерние подразделения
+    if (hasChildren) {
+      html += '<ul>';
+      html += renderAldProTreeRecursive(unit.children);
+      html += '</ul>';
+    }
+    
+    html += `</li>`;
+  });
+  
+  return html;
 }
 
 // Загрузка пользователей подразделения
