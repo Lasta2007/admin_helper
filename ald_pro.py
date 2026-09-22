@@ -121,17 +121,28 @@ async def get_organizational_units() -> Dict[str, Any]:
     
     try:
         # Используем каталожный API для получения дерева подразделений
-        response = await client.get("/api/ds/organizational-units/catalogue/children")
+        endpoint = "/api/ds/organizational-units/catalogue/children"
+        logger.debug(f"Запрос к ALD Pro: GET {endpoint}")
+        response = await client.get(endpoint)
+        
+        logger.info(f"Статус ответа: {response.status_code}")
+        logger.debug(f"Тело ответа: {response.text[:500]}")
+        
         if response.status_code == 200:
             data = response.json()
+            logger.debug(f"Распарсенный JSON: success={data.get('success')}, data type={type(data.get('data'))}")
+            if isinstance(data.get('data'), list):
+                logger.debug(f"Количество элементов в data: {len(data.get('data', []))}")
             if data.get('success'):
                 return {'success': True, 'data': data.get('data', [])}
-            return data
+            else:
+                logger.warning(f"ALD Pro вернул success=false: {data}")
+                return data
         else:
-            logger.warning(f"ALD Pro вернул статус {response.status_code} при получении подразделений")
+            logger.warning(f"ALD Pro вернул статус {response.status_code} при получении подразделений: {response.text[:200]}")
             return {'success': False, 'detail': f'HTTP {response.status_code}'}
     except Exception as e:
-        logger.error(f"Ошибка при получении подразделений ALD Pro: {e}")
+        logger.error(f"Ошибка при получении подразделений ALD Pro: {e}", exc_info=True)
         return {'success': False, 'detail': str(e)}
     finally:
         await client.aclose()
