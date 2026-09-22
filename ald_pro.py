@@ -120,7 +120,12 @@ async def get_organizational_units() -> Dict[str, Any]:
     try:
         response = await client.get("/api/ds/organizational-units")
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Преобразуем плоский список в иерархическое дерево
+            if data.get('success') and data.get('data'):
+                tree_data = build_ou_tree(data['data'])
+                return {'success': True, 'data': tree_data}
+            return data
         else:
             logger.warning(f"ALD Pro вернул статус {response.status_code} при получении подразделений")
             return {'success': False, 'detail': f'HTTP {response.status_code}'}
@@ -129,6 +134,44 @@ async def get_organizational_units() -> Dict[str, Any]:
         return {'success': False, 'detail': str(e)}
     finally:
         await client.aclose()
+
+
+def build_ou_tree(units: list) -> list:
+    """
+    Построить иерархическое дерево подразделений из плоского списка.
+    
+    Args:
+        units: Плоский список подразделений с полями:
+               - organizationunitlistitem_dn (DN подразделения)
+               - organizationunitlistitem_parent_dn (DN родительского подразделения)
+               - organizationunitlistitem_display_name (Отображаемое имя)
+               - organizationunitlistitem_is_leaf (Является ли конечным)
+    
+    Returns:
+        Иерархический список с вложенными children
+    """
+    if not units:
+        return []
+    
+    # Создаем словарь для быстрого доступа по DN
+    unit_map = {}
+    for unit in units:
+        dn = unit.get('organizationunitlistitem_dn', '')
+        unit_map[dn] = {**unit, 'children': []}
+    
+    # Строим дерево
+    root_units = []
+    for dn, unit in unit_map.items():
+        parent_dn = unit.get('organizationunitlistitem_parent_dn', '')
+        
+        # Если есть родитель и он существует в словаре
+        if parent_dn and parent_dn in unit_map:
+            unit_map[parent_dn]['children'].append(unit)
+        else:
+            # Корневое подразделение
+            root_units.append(unit)
+    
+    return root_units
 
 
 async def get_organizational_unit_users(ou_dn: str) -> Dict[str, Any]:

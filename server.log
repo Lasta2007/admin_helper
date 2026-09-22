@@ -1,14 +1,9 @@
-2026-08-05 07:31:17 - admin_helper - INFO - [migrate_db] Миграция базы данных завершена
-INFO:     Started server process [4158]
+2026-09-22 06:03:02 - admin_helper - INFO - [migrate_db] Миграция базы данных завершена
+INFO:     Started server process [300]
 INFO:     Waiting for application startup.
-2026-08-05 07:31:17 - admin_helper - INFO - [lifespan] Запуск приложения, старт фоновой задачи пинга
-2026-08-05 07:31:17 - admin_helper - INFO - [background_ping_task] Фоновая задача пинга запущена
-2026-08-05 07:31:17 - admin_helper - INFO - [background_ping_task] Начало фонового пинга всех подсетей (интервал: 60 мин)
-2026-08-05 07:31:17 - admin_helper - INFO - [background_ping_task] Фоновый пинг завершен. Следующий через 60 мин
+2026-09-22 06:03:02 - admin_helper - INFO - [lifespan] Запуск приложения, старт фоновой задачи пинга
+2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Фоновая задача пинга запущена
+2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Начало фонового пинга всех подсетей (интервал: 60 мин)
+2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Фоновый пинг завершен. Следующий через 60 мин
 INFO:     Application startup complete.
-ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): [errno 98] address already in use
-INFO:     Waiting for application shutdown.
-2026-08-05 07:31:17 - admin_helper - INFO - [lifespan] Остановка приложения, остановка фоновой задачи пинга
-2026-08-05 07:31:17 - admin_helper - INFO - [background_ping_task] Задача отменена
-2026-08-05 07:31:17 - admin_helper - INFO - [lifespan] Фоновая задача пинга остановлена
-INFO:     Application shutdown complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
