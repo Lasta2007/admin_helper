@@ -190,13 +190,32 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 }
 
 /* ALD Pro styles */
+#aldProView {
+  flex: 1;
+  padding: 24px;
+}
+
+#aldProView .ald-pro-content {
+  display: flex;
+  gap: 20px;
+  height: calc(100vh - 150px);
+  width: 100%;
+}
+
 #aldProView .ald-pro-tree,
 #aldProView .ald-pro-users {
   background: #fff;
   padding: 20px;
   border-radius: 10px;
   box-shadow: 0 2px 8px rgba(0,0,0,.08);
-  margin-bottom: 20px;
+  flex: 1;
+  overflow-y: auto;
+  min-width: 300px;
+}
+
+#aldProView .ald-pro-tree {
+  flex: 0 0 400px;
+  max-width: 500px;
 }
 
 #aldProView h3 {
@@ -208,11 +227,15 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 
 .ald-pro-tree ul {
   list-style: none;
+  padding-left: 0;
+}
+
+.ald-pro-tree ul ul {
   padding-left: 20px;
 }
 
 .ald-pro-tree li {
-  margin: 8px 0;
+  margin: 4px 0;
 }
 
 .ald-pro-item {
@@ -231,6 +254,17 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 .ald-pro-item.selected {
   background: #bbdefb;
   font-weight: 600;
+}
+
+.ald-pro-arrow {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  font-size: 10px;
+  color: #546e7a;
+  transition: transform 0.2s;
+  cursor: pointer;
 }
 
 .ald-pro-icon {
