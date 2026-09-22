@@ -21,9 +21,11 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual environments
+# Virtual Environment
 venv/
 ENV/
+env.bak/
+venv.bak/
 
 # Logs
 *.log
@@ -33,11 +35,6 @@ ENV/
 .env.local
 *.env.*
 
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+# Server
+server.log
 ```

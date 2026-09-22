@@ -696,32 +696,39 @@ function renderAldProTree(units, container) {
 }
 
 // Рекурсивная функция для рендеринга дерева
-function renderAldProTreeRecursive(units) {
+function renderAldProTreeRecursive(units, level = 0) {
   if (!units || units.length === 0) return '';
-  
+
   let html = '';
   units.forEach(unit => {
     const displayName = unit.organizationunitlistitem_display_name || unit.organizationunitlistitem_ou || 'Без названия';
     const isLeaf = unit.organizationunitlistitem_is_leaf;
     const icon = isLeaf ? '📁' : '📂';
     const hasChildren = unit.children && unit.children.length > 0;
-    
+    const dn = unit.organizationunitlistitem_dn || '';
+
     html += `<li>`;
-    html += `<div class="ald-pro-item" data-dn="${unit.organizationunitlistitem_dn}" data-name="${displayName}">`;
+    html += `<div class="ald-pro-item" data-dn="${dn}" data-name="${displayName}">`;
+    // Добавляем стрелку для элементов с детьми
+    if (hasChildren) {
+      html += `<span class="ald-pro-arrow">▶</span>`;
+    } else {
+      html += `<span class="ald-pro-arrow" style="visibility: hidden;">▶</span>`;
+    }
     html += `<span class="ald-pro-icon">${icon}</span>`;
     html += `<span class="ald-pro-name">${displayName}</span>`;
     html += `</div>`;
-    
+
     // Рекурсивно рендерим дочерние подразделения
     if (hasChildren) {
-      html += '<ul>';
-      html += renderAldProTreeRecursive(unit.children);
+      html += '<ul style="display: none;">';
+      html += renderAldProTreeRecursive(unit.children, level + 1);
       html += '</ul>';
     }
-    
+
     html += `</li>`;
   });
-  
+
   return html;
 }
 

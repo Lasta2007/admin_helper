@@ -199,6 +199,7 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   display: flex;
   gap: 20px;
   height: calc(100vh - 150px);
+  width: 100%;
 }
 
 #aldProView .ald-pro-tree,
@@ -209,10 +210,12 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   box-shadow: 0 2px 8px rgba(0,0,0,.08);
   flex: 1;
   overflow-y: auto;
+  min-width: 300px;
 }
 
 #aldProView .ald-pro-tree {
-  flex: 0 0 350px;
+  flex: 0 0 400px;
+  max-width: 500px;
 }
 
 #aldProView h3 {
@@ -251,6 +254,17 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
 .ald-pro-item.selected {
   background: #bbdefb;
   font-weight: 600;
+}
+
+.ald-pro-arrow {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-right: 4px;
+  font-size: 10px;
+  color: #546e7a;
+  transition: transform 0.2s;
+  cursor: pointer;
 }
 
 .ald-pro-icon {

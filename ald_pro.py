@@ -146,6 +146,7 @@ def build_ou_tree(units: list) -> list:
                - organizationunitlistitem_parent_dn (DN родительского подразделения)
                - organizationunitlistitem_display_name (Отображаемое имя)
                - organizationunitlistitem_is_leaf (Является ли конечным)
+               - organizationunitlistitem_ou (Имя OU)
     
     Returns:
         Иерархический список с вложенными children
@@ -157,7 +158,8 @@ def build_ou_tree(units: list) -> list:
     unit_map = {}
     for unit in units:
         dn = unit.get('organizationunitlistitem_dn', '')
-        unit_map[dn] = {**unit, 'children': []}
+        if dn:  # Пропускаем записи без DN
+            unit_map[dn] = {**unit, 'children': []}
     
     # Строим дерево
     root_units = []
@@ -168,8 +170,21 @@ def build_ou_tree(units: list) -> list:
         if parent_dn and parent_dn in unit_map:
             unit_map[parent_dn]['children'].append(unit)
         else:
-            # Корневое подразделение
+            # Корневое подразделение (нет родителя или родитель не найден)
             root_units.append(unit)
+    
+    # Сортируем корневые подразделения по имени
+    root_units.sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
+    
+    # Рекурсивно сортируем все дочерние подразделения
+    def sort_children(node):
+        if node.get('children'):
+            node['children'].sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
+            for child in node['children']:
+                sort_children(child)
+    
+    for root in root_units:
+        sort_children(root)
     
     return root_units
 
