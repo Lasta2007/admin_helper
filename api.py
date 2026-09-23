@@ -2,11 +2,12 @@ import asyncio
 import subprocess
 import socket
 import re
+import time
 import ipaddress
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
-from functools import lru_cache
+from pathlib import Path
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -23,8 +24,6 @@ from database import (
     get_all_settings,
     get_setting,
     set_setting,
-    update_online,
-    migrate_db,
     save_host_with_ports,
     update_online_with_ports,
 )
@@ -129,11 +128,22 @@ class AldProConnectionTest(BaseModel):
 
 
 def validate_cidr(cidr: str):
-    import ipaddress
     try:
         return ipaddress.ip_network(cidr, strict=False)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Некорректная подсеть: {e}")
+
+
+def _clean_hostname_cache():
+    """Очистка устаревших записей кэша hostname."""
+    current_time = time.time()
+    expired_ips = [
+        ip for ip, cache_time in hostname_cache_time.items()
+        if current_time - cache_time > HOSTNAME_CACHE_TTL
+    ]
+    for ip in expired_ips:
+        hostname_cache.pop(ip, None)
+        hostname_cache_time.pop(ip, None)
 
 
 async def get_netbios_name(ip: str, timeout: float = 2.0) -> str:
@@ -236,23 +246,8 @@ async def get_netbios_name(ip: str, timeout: float = 2.0) -> str:
         return ""
 
 
-def _clean_hostname_cache():
-    """Очистка устаревших записей кэша hostname."""
-    import time
-    current_time = time.time()
-    expired_ips = [
-        ip for ip, cache_time in hostname_cache_time.items()
-        if current_time - cache_time > HOSTNAME_CACHE_TTL
-    ]
-    for ip in expired_ips:
-        hostname_cache.pop(ip, None)
-        hostname_cache_time.pop(ip, None)
-
-
 async def get_hostname(ip: str) -> str:
     """Получение hostname через reverse DNS lookup или NetBIOS с кэшированием."""
-    import time
-    
     # Проверяем кэш
     current_time = time.time()
     if ip in hostname_cache and (current_time - hostname_cache_time.get(ip, 0)) < HOSTNAME_CACHE_TTL:
@@ -410,7 +405,6 @@ async def get_mac_address(ip: str) -> str:
             # Определяем подсеть IP адреса для поиска шлюза
             ip_obj = ipaddress.ip_address(ip)
             # Получаем все подсети из БД чтобы найти подходящую
-            from database import get_networks
             networks = get_networks()
             gateway_ip = None
             
@@ -711,7 +705,6 @@ async def scan_ports(ip: str, timeout: float = 1.0) -> str:
     Сканирует известные порты на хосте.
     Возвращает строку с перечнем открытых портов в формате: HTTP(80),SSH(22)
     """
-    import time
     
     # Проверяем кэш
     current_time = time.time()
@@ -947,7 +940,6 @@ def api_set_work_pc_log_path(update: WorkPcLogPathUpdate):
     logger.info(f"[api_set_work_pc_log_path] Установка пути к файлу: {update.log_path}")
     
     # Проверяем существование файла
-    from pathlib import Path
     if not Path(update.log_path).exists():
         raise HTTPException(status_code=400, detail=f"Файл не найден: {update.log_path}")
     

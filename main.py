@@ -1,5 +1,6 @@
 from pathlib import Path
 import asyncio
+import ipaddress
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -40,7 +41,6 @@ async def background_ping_task():
                     logger.info(f"[background_ping_task] Пинг подсети {network['cidr']} (ID={network['id']})")
                     
                     # Генерируем все хосты из подсети
-                    import ipaddress
                     net = ipaddress.ip_network(network["cidr"], strict=False)
                     hosts_to_ping = [{"ip": str(ip)} for ip in net.hosts()]
                     

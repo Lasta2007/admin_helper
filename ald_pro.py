@@ -4,8 +4,14 @@
 import httpx
 import logging
 from typing import Dict, Any, Optional
+from urllib.parse import quote, unquote
 
 logger = logging.getLogger('admin_helper')
+
+
+def _encode_dn(dn: str) -> str:
+    """Кодирует DN для безопасного использования в URL-пути."""
+    return quote(dn, safe='')
 
 # Глобальное хранилище настроек и сессий
 _aldpro_settings = {
@@ -130,7 +136,7 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
         async def fetch_ou_tree(ou_dn: str) -> list:
             """Рекурсивно получает подразделение и все его дочерние элементы."""
             # Получаем информацию о текущем подразделении
-            ou_info_url = f"/api/ds/organizational-units/{ou_dn}"
+            ou_info_url = f"/api/ds/organizational-units/{_encode_dn(ou_dn)}"
             logger.info(f"Запрос к ALD Pro: GET {ou_info_url}")
             
             ou_info_response = await client.get(ou_info_url)
@@ -159,7 +165,7 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
                     }
             
             # Получаем список дочерних подразделений
-            children_url = f"/api/ds/organizational-units/{ou_dn}/organizational-units"
+            children_url = f"/api/ds/organizational-units/{_encode_dn(ou_dn)}/organizational-units"
             logger.info(f"Запрос к ALD Pro: GET {children_url}")
             
             children_response = await client.get(children_url)
@@ -304,11 +310,10 @@ async def get_organizational_unit_users(ou_dn: str) -> Dict[str, Any]:
         return {'success': False, 'detail': 'ALD Pro не настроен'}
     
     try:
-        # DN уже закодирован в URL, декодируем для использования в пути
-        from urllib.parse import unquote
+        # DN может прийти как закоданным (из URL), так и в исходном виде — нормализуем
         decoded_dn = unquote(ou_dn)
-        
-        endpoint = f"/api/ds/organizational-units/{decoded_dn}/users-list"
+
+        endpoint = f"/api/ds/organizational-units/{_encode_dn(decoded_dn)}/users-list"
         response = await client.get(endpoint)
         
         if response.status_code == 200:
