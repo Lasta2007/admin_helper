@@ -1,9 +1,12 @@
+import logging
 import sqlite3
 from pathlib import Path
 from datetime import datetime
 
 DB_PATH = Path(__file__).parent / "admin_helper.db"
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+logger = logging.getLogger('admin_helper')
 
 
 def get_connection():
@@ -12,23 +15,37 @@ def get_connection():
     return conn
 
 
+def _table_exists(cursor, table_name: str) -> bool:
+    """Проверяет существование таблицы в БД."""
+    row = cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    ).fetchone()
+    return row is not None
+
+
+def _hosts_unique_exists(cursor) -> bool:
+    """Проверяет наличие UNIQUE-ограничения (network_id, ip) в таблице hosts."""
+    for row in cursor.execute("PRAGMA index_list(hosts)").fetchall():
+        idx_name = row['name']
+        cols = [r['name'] for r in cursor.execute(f"PRAGMA index_info('{idx_name}')").fetchall()]
+        if cols == ['network_id', 'ip']:
+            return True
+    return False
+
+
 def migrate_db():
     """
     Миграция структуры базы данных.
     Добавляет новые колонки и таблицы при необходимости.
     Вызывается при каждом запуске приложения.
+    Идемпотентна: безопасна для повторных вызовов.
     """
     conn = get_connection()
     cursor = conn.cursor()
-    
-    # Получаем список существующих таблиц
-    existing_tables = cursor.execute("""
-        SELECT name FROM sqlite_master WHERE type='table'
-    """).fetchall()
-    table_names = [t['name'] for t in existing_tables]
-    
+
     # Создаем таблицу networks если не существует
-    if 'networks' not in table_names:
+    if not _table_exists(cursor, 'networks'):
         cursor.execute("""
         CREATE TABLE networks(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,9 +54,9 @@ def migrate_db():
         )
         """)
         logger.info("[migrate_db] Таблица 'networks' создана")
-    
+
     # Создаем таблицу hosts если не существует
-    if 'hosts' not in table_names:
+    if not _table_exists(cursor, 'hosts'):
         cursor.execute("""
         CREATE TABLE hosts(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,22 +74,54 @@ def migrate_db():
         )
         """)
         logger.info("[migrate_db] Таблица 'hosts' создана")
-    
-    # Проверяем наличие колонки scanned_hostname в таблице hosts
-    if 'hosts' in table_names:
+    else:
+        # Проверяем наличие новых колонок в существующей таблице hosts
         columns = cursor.execute("PRAGMA table_info(hosts)").fetchall()
         column_names = [c['name'] for c in columns]
-        
+
         if 'scanned_hostname' not in column_names:
             cursor.execute("ALTER TABLE hosts ADD COLUMN scanned_hostname TEXT DEFAULT ''")
             logger.info("[migrate_db] Добавлена колонка 'scanned_hostname' в таблицу 'hosts'")
-        
+
         if 'open_ports' not in column_names:
             cursor.execute("ALTER TABLE hosts ADD COLUMN open_ports TEXT DEFAULT ''")
             logger.info("[migrate_db] Добавлена колонка 'open_ports' в таблицу 'hosts'")
-    
+
+        # Миграция старых БД: добавляем ограничение уникальности (network_id, ip),
+        # если оно отсутствует (старая схема его не содержала)
+        if not _hosts_unique_exists(cursor):
+            cursor.executescript("""
+                DELETE FROM hosts WHERE id NOT IN (
+                    SELECT MIN(id) FROM hosts GROUP BY network_id, ip
+                );
+                CREATE TABLE hosts_new(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    network_id INTEGER NOT NULL,
+                    ip TEXT NOT NULL,
+                    hostname TEXT DEFAULT '',
+                    scanned_hostname TEXT DEFAULT '',
+                    comment TEXT DEFAULT '',
+                    online INTEGER DEFAULT 0,
+                    mac TEXT DEFAULT '',
+                    last_ping TEXT,
+                    open_ports TEXT DEFAULT '',
+                    UNIQUE(network_id, ip),
+                    FOREIGN KEY(network_id) REFERENCES networks(id)
+                );
+                INSERT INTO hosts_new(id, network_id, ip, hostname, scanned_hostname,
+                                      comment, online, mac, last_ping, open_ports)
+                SELECT id, network_id, ip, hostname,
+                       COALESCE(scanned_hostname, ''),
+                       comment, online, mac, last_ping,
+                       COALESCE(open_ports, '')
+                FROM hosts;
+                DROP TABLE hosts;
+                ALTER TABLE hosts_new RENAME TO hosts;
+            """)
+            logger.info("[migrate_db] Добавлено UNIQUE-ограничение (network_id, ip) в таблицу 'hosts'")
+
     # Создаем таблицу settings если не существует
-    if 'settings' not in table_names:
+    if not _table_exists(cursor, 'settings'):
         cursor.execute("""
         CREATE TABLE settings(
             key TEXT PRIMARY KEY,
@@ -80,15 +129,15 @@ def migrate_db():
         )
         """)
         logger.info("[migrate_db] Таблица 'settings' создана")
-    
+
     # Вставляем настройки по умолчанию если их нет
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ping_interval', '60')")
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('ping_timeout', '3')")
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_enabled', '0')")
     cursor.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('port_scan_interval', '1440')")
-    
+
     # Создаем таблицу work_pc если не существует (модуль WORK PC)
-    if 'work_pc' not in table_names:
+    if not _table_exists(cursor, 'work_pc'):
         cursor.execute("""
         CREATE TABLE work_pc(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,15 +161,10 @@ def migrate_db():
         )
         """)
         logger.info("[migrate_db] Таблица 'work_pc' создана")
-    
+
     conn.commit()
     conn.close()
     logger.info("[migrate_db] Миграция базы данных завершена")
-
-
-# Импортируем logger после определения функций чтобы избежать циклического импорта
-import logging
-logger = logging.getLogger('admin_helper')
 
 
 def init_db():

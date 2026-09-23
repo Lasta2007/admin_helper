@@ -7,10 +7,10 @@
 """
 
 import logging
+import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime
-import os
 
 from database import get_setting, set_setting
 
@@ -112,7 +112,6 @@ def parse_log_file(file_path: str) -> tuple[List[Dict[str, str]], List[str]]:
             is_header = True
             if len(first_parts) >= 15:
                 # Проверяем, похоже ли первое поле на дату
-                import re
                 if re.match(r'^\d{4}-\d{2}-\d{2}', first_parts[0]):
                     is_header = False
                     headers = DEFAULT_HEADERS
