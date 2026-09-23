@@ -112,11 +112,11 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
     Получить дерево организационных подразделений.
     
     Принцип работы:
-    1. Получаем информацию о подразделении: GET /api/ds/organizational-units/{dn}
-    2. Получаем список дочерних подразделений: GET /api/ds/organizational-units/{dn}/organizational-units
+    1. Сначала получаем список корневых подразделений через /api/ds/organizationalunits/catalogue/children
+    2. Для каждого подразделения получаем его дочерние элементы через /api/ds/organizational-units/{dn}/organizational-units
     
     Args:
-        root_dn: DN корневого подразделения (опционально, если не указан - используется корень домена)
+        root_dn: DN корневого подразделения (опционально, если не указан - получаем все корневые OU)
     
     Returns:
         Dict с древовидной структурой подразделений
@@ -126,14 +126,6 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
         return {'success': False, 'detail': 'ALD Pro не настроен'}
     
     try:
-        # Если root_dn не указан, используем корневой DN домена
-        if not root_dn:
-            # Пытаемся определить корневой DN из настроек URL или используем стандартный
-            # Обычно это dc={domain},dc={tld} или cn=orgunits,cn=accounts,dc={domain},dc={tld}
-            # Для начала попробуем получить список всех OU без указания конкретного DN
-            # Используем корневой путь для orgunits
-            root_dn = "cn=orgunits,cn=accounts,dc=nedra,dc=net"
-        
         # Функция для рекурсивного получения подразделений
         async def fetch_ou_tree(ou_dn: str) -> list:
             """Рекурсивно получает подразделение и все его дочерние элементы."""
@@ -144,14 +136,27 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
             ou_info_response = await client.get(ou_info_url)
             if ou_info_response.status_code != 200:
                 logger.warning(f"Не удалось получить информацию о подразделении {ou_dn}: {ou_info_response.status_code}")
-                return []
-            
-            ou_info_data = ou_info_response.json()
-            if not ou_info_data.get('success'):
-                logger.warning(f"ALD Pro вернул success=false для {ou_dn}: {ou_info_data}")
-                return []
-            
-            ou_info = ou_info_data.get('data', {})
+                # Если не удалось получить информацию, создаем заглушку
+                ou_info = {
+                    'organizationunit_dn': ou_dn,
+                    'organizationunit_parent_dn': '',
+                    'organizationunit_display_name': ou_dn.split(',')[0].replace('ou=', ''),
+                    'organizationunit_is_leaf': False,
+                    'organizationunit_ou': ou_dn.split(',')[0].replace('ou=', '')
+                }
+            else:
+                ou_info_data = ou_info_response.json()
+                if ou_info_data.get('success'):
+                    ou_info = ou_info_data.get('data', {})
+                else:
+                    logger.warning(f"ALD Pro вернул success=false для {ou_dn}: {ou_info_data}")
+                    ou_info = {
+                        'organizationunit_dn': ou_dn,
+                        'organizationunit_parent_dn': '',
+                        'organizationunit_display_name': ou_dn.split(',')[0].replace('ou=', ''),
+                        'organizationunit_is_leaf': False,
+                        'organizationunit_ou': ou_dn.split(',')[0].replace('ou=', '')
+                    }
             
             # Получаем список дочерних подразделений
             children_url = f"/api/ds/organizational-units/{ou_dn}/organizational-units"
@@ -160,14 +165,14 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
             children_response = await client.get(children_url)
             if children_response.status_code != 200:
                 logger.warning(f"Не удалось получить дочерние подразделения для {ou_dn}: {children_response.status_code}")
-                return []
-            
-            children_data = children_response.json()
-            if not children_data.get('success'):
-                logger.warning(f"ALD Pro вернул success=false для детей {ou_dn}: {children_data}")
-                return []
-            
-            children_list = children_data.get('data', [])
+                children_list = []
+            else:
+                children_data = children_response.json()
+                if children_data.get('success'):
+                    children_list = children_data.get('data', [])
+                else:
+                    logger.warning(f"ALD Pro вернул success=false для детей {ou_dn}: {children_data}")
+                    children_list = []
             
             # Преобразуем текущее подразделение в нужный формат
             current_unit = {
@@ -190,8 +195,37 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
             
             return [current_unit]
         
-        # Запускаем рекурсивный обход с корневого подразделения
-        tree = await fetch_ou_tree(root_dn)
+        # Если root_dn указан, получаем дерево начиная с него
+        if root_dn:
+            tree = await fetch_ou_tree(root_dn)
+            logger.info(f"Построено дерево подразделений: {tree}")
+            return {'success': True, 'data': tree}
+        
+        # Если root_dn не указан, получаем все корневые подразделения через catalogue/children
+        logger.info("Запрос к ALD Pro: GET /api/ds/organizationalunits/catalogue/children")
+        catalogue_url = "/api/ds/organizationalunits/catalogue/children"
+        catalogue_response = await client.get(catalogue_url)
+        
+        if catalogue_response.status_code != 200:
+            logger.warning(f"Не удалось получить каталог подразделений: {catalogue_response.status_code}")
+            return {'success': False, 'detail': f'HTTP {catalogue_response.status_code}'}
+        
+        catalogue_data = catalogue_response.json()
+        if not catalogue_data.get('success'):
+            logger.warning(f"ALD Pro вернул success=false для catalogue/children: {catalogue_data}")
+            return {'success': False, 'detail': 'ALD Pro вернул ошибку при получении каталога'}
+        
+        # Получаем список корневых подразделений
+        root_units_list = catalogue_data.get('data', [])
+        
+        # Для каждого корневого подразделения строим дерево
+        tree = []
+        for root_item in root_units_list:
+            root_dn = root_item.get('organizationunitlistitem_dn', '')
+            if root_dn:
+                root_tree = await fetch_ou_tree(root_dn)
+                if root_tree:
+                    tree.extend(root_tree)
         
         logger.info(f"Построено дерево подразделений: {tree}")
         return {'success': True, 'data': tree}
