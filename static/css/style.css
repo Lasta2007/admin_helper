@@ -267,6 +267,10 @@ body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:#eef2f6;display:f
   cursor: pointer;
 }
 
+.ald-pro-arrow.expanded {
+  transform: rotate(90deg);
+}
+
 .ald-pro-icon {
   margin-right: 8px;
   font-size: 16px;

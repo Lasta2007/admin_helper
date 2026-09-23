@@ -682,7 +682,15 @@ function renderAldProTree(units, container) {
   html += renderAldProTreeRecursive(units);
   html += '</ul>';
   container.innerHTML = html;
-  
+
+  // Раскрываем первый уровень дерева, чтобы дочерние подразделения
+  // были видны сразу (иначе отображается только корневая запись)
+  container.querySelectorAll(':scope > ul > li > ul').forEach(ul => {
+    ul.style.display = '';
+    const arrow = ul.parentElement.querySelector('.ald-pro-arrow');
+    if (arrow) arrow.classList.add('expanded');
+  });
+
   // Обработчики кликов по подразделениям
   container.querySelectorAll('.ald-pro-item').forEach(item => {
     item.onclick = (e) => {
@@ -691,6 +699,19 @@ function renderAldProTree(units, container) {
       item.classList.add('selected');
       selectedOuDn = item.dataset.dn;
       loadAldProUsers(selectedOuDn);
+    };
+  });
+
+  // Клик по стрелке — свернуть/развернуть ветку
+  container.querySelectorAll('.ald-pro-arrow').forEach(arrow => {
+    arrow.onclick = (e) => {
+      e.stopPropagation();
+      const li = arrow.closest('li');
+      const sub = li ? li.querySelector(':scope > ul') : null;
+      if (!sub) return;
+      const hidden = sub.style.display === 'none';
+      sub.style.display = hidden ? '' : 'none';
+      arrow.classList.toggle('expanded', hidden);
     };
   });
 }
