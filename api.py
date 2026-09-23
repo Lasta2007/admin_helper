@@ -1034,9 +1034,9 @@ async def api_test_aldpro_connection(test_data: AldProConnectionTest):
 
 
 @router.get("/aldpro/organizational-units")
-async def api_get_organizational_units():
+async def api_get_organizational_units(root_dn: str = None):
     """Получить список организационных подразделений ALD Pro."""
-    result = await get_organizational_units()
+    result = await get_organizational_units(root_dn)
     if result.get('success'):
         return result
     raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка получения данных'))
