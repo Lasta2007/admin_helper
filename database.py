@@ -162,6 +162,31 @@ def migrate_db():
         """)
         logger.info("[migrate_db] Таблица 'work_pc' создана")
 
+    # Создаем таблицу y360_sync_map если не существует (модуль Яндекс 360:
+    # соответствие OU ALD Pro -> департамент Яндекс 360)
+    if not _table_exists(cursor, 'y360_sync_map'):
+        cursor.execute("""
+        CREATE TABLE y360_sync_map(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'y360_sync_map' создана")
+
+    # Создаем таблицу y360_user_map если не существует (модуль Яндекс 360:
+    # сопоставление пользователей ALD Pro и сотрудников Яндекс 360)
+    if not _table_exists(cursor, 'y360_user_map'):
+        cursor.execute("""
+        CREATE TABLE y360_user_map(
+            login TEXT PRIMARY KEY,
+            email TEXT DEFAULT '',
+            ou_dn TEXT DEFAULT '',
+            dept_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'y360_user_map' создана")
+
     conn.commit()
     conn.close()
     logger.info("[migrate_db] Миграция базы данных завершена")

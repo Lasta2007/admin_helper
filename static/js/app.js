@@ -932,3 +932,170 @@ document.getElementById('y360GetTokenLinkBtn').onclick = async () => {
 document.addEventListener('DOMContentLoaded', function() {
   loadYandex360Settings();
 });
+
+// ---------------------------------------------------------------------------
+// Яндекс 360: страница синхронизации (выгрузка пользователей ALD Pro)
+// ---------------------------------------------------------------------------
+
+const Y360_VIEWS = ['netView', 'hostView', 'settingsView', 'workPcView', 'aldProView'];
+
+function hideAllY360Views() {
+  Y360_VIEWS.forEach(id => document.getElementById(id).classList.add('hidden'));
+}
+
+function showY360Sync() {
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  document.getElementById('y360SyncNav').classList.add('active');
+  hideAllY360Views();
+  document.getElementById('y360SyncView').classList.remove('hidden');
+  loadY360SyncSettings();
+  loadY360SyncStatus();
+}
+
+document.getElementById('y360SyncNav').onclick = () => showY360Sync();
+
+document.getElementById('y360SyncBackBtn').onclick = (e) => {
+  e.preventDefault();
+  document.getElementById('y360SyncView').classList.add('hidden');
+  showIPAM();
+};
+
+async function loadY360SyncSettings() {
+  try {
+    const res = await fetch('/api/yandex360/sync/settings');
+    if (!res.ok) return;
+    const s = await res.json();
+    document.getElementById('y360SyncRootOuInput').value = s.root_ou_dn || '';
+    document.getElementById('y360SyncParentDeptInput').value = s.parent_department_id || '';
+    document.getElementById('y360SyncEmailDomainInput').value = s.email_domain || '';
+    document.getElementById('y360SyncIntervalInput').value = s.sync_interval_minutes || 60;
+    document.getElementById('y360SyncBlockMissingInput').checked = !!s.block_missing_users;
+  } catch (e) {
+    console.error('Ошибка загрузки настроек синхронизации Яндекс 360:', e);
+  }
+}
+
+document.getElementById('y360SyncSaveBtn').onclick = async () => {
+  const settings = {
+    root_ou_dn: document.getElementById('y360SyncRootOuInput').value.trim(),
+    parent_department_id: document.getElementById('y360SyncParentDeptInput').value.trim(),
+    email_domain: document.getElementById('y360SyncEmailDomainInput').value.trim(),
+    sync_interval_minutes: parseInt(document.getElementById('y360SyncIntervalInput').value) || 60,
+    block_missing_users: document.getElementById('y360SyncBlockMissingInput').checked
+  };
+  try {
+    const res = await fetch('/api/yandex360/sync/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(settings)
+    });
+    const data = await res.json();
+    alert(res.ok ? 'Настройки синхронизации сохранены' : ('Ошибка: ' + (data.detail || res.status)));
+    if (res.ok) loadY360SyncStatus();
+  } catch (e) {
+    console.error(e);
+    alert('Ошибка сохранения настроек синхронизации');
+  }
+};
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString('ru-RU');
+}
+
+function renderY360Report(last) {
+  const el = document.getElementById('y360SyncReport');
+  if (!last || !last.report) {
+    el.textContent = last && last.error ? ('Ошибка: ' + last.error) : 'Ещё не выполнялась';
+    return;
+  }
+  const r = last.report;
+  const u = r.users || {};
+  let text = `Запуск (${r.trigger || ''}): ${r.started_at || ''}, длительность ${r.duration_sec || '?'} с\n` +
+    `Статус: ${last.success ? 'успешно' : 'с ошибками'}\n` +
+    `Корневой OU: ${r.root_ou || ''}\n` +
+    `Подразделений ALD Pro: ${r.ald_ous}, создано в Яндекс 360: ${(r.departments||{}).created}, сопоставлено: ${(r.departments||{}).matched}\n` +
+    `Пользователей ALD Pro с e-mail: ${r.ald_users_with_email} (без e-mail пропущено: ${r.ald_users_skipped_no_email})\n` +
+    `Создано: ${u.created||0}, перенесено между подразделениями: ${u.moved||0}, обновлено: ${u.updated||0}, ` +
+    `заблокировано (нет в ALD Pro): ${u.blocked||0}, без изменений: ${u.unchanged||0}, пропущено: ${u.skipped||0}\n`;
+  if ((r.errors || []).length) {
+    text += `\nОшибки (${r.errors.length}):\n` + r.errors.slice(0, 20).map(e => ' - ' + e).join('\n');
+  }
+  el.textContent = text;
+}
+
+async function loadY360SyncStatus() {
+  const el = document.getElementById('y360SyncStatus');
+  try {
+    const res = await fetch('/api/yandex360/sync/status');
+    const data = await res.json();
+    if (!res.ok) { el.textContent = 'Ошибка: ' + (data.detail || res.status); return; }
+    el.textContent =
+      `Выполняется сейчас: ${data.running ? 'ДА' : 'нет'}\n` +
+      `Интервал авто-синхронизации: ${data.settings.sync_interval_minutes} мин\n` +
+      `Корневой OU: ${data.settings.root_ou_dn || '(не задан)'}\n` +
+      `Последняя синхронизация: ${fmtTs(data.last_sync_at)}\n` +
+      `Следующая: ${fmtTs(data.next_sync_at)}`;
+    renderY360Report(data.last_sync);
+  } catch (e) {
+    el.textContent = 'Ошибка получения статуса: ' + e;
+  }
+}
+
+document.getElementById('y360SyncRefreshBtn').onclick = () => loadY360SyncStatus();
+
+document.getElementById('y360SyncRunBtn').onclick = async () => {
+  if (!confirm('Запустить выгрузку структуры подразделений и пользователей ALD Pro в Яндекс 360?')) return;
+  try {
+    const res = await fetch('/api/yandex360/sync/run', {method: 'POST'});
+    const data = await res.json();
+    alert(data.detail || data.error || ('HTTP ' + res.status));
+    setTimeout(loadY360SyncStatus, 2000);
+    setTimeout(loadY360SyncStatus, 15000);
+  } catch (e) {
+    alert('Ошибка запуска синхронизации: ' + e);
+  }
+};
+
+document.getElementById('y360SyncResetMapBtn').onclick = async () => {
+  if (!confirm('Сбросить кэш соответствий OU/пользователей? При следующей синхронизации соответствия будут восстановлены по примечаниям департаментов.')) return;
+  try {
+    const res = await fetch('/api/yandex360/sync/reset-map', {method: 'POST'});
+    alert(res.ok ? 'Кэш соответствий сброшен' : 'Ошибка сброса кэша');
+  } catch (e) {
+    alert('Ошибка: ' + e);
+  }
+};
+
+document.getElementById('y360SyncPreviewBtn').onclick = async () => {
+  const btn = document.getElementById('y360SyncPreviewBtn');
+  const title = document.getElementById('y360PreviewTitle');
+  const box = document.getElementById('y360PreviewResult');
+  btn.disabled = true;
+  btn.textContent = 'Анализ...';
+  title.classList.remove('hidden');
+  box.classList.remove('hidden');
+  box.textContent = 'Сверяем данные ALD Pro и Яндекс 360 (без записи изменений)...';
+  try {
+    const res = await fetch('/api/yandex360/sync/preview', {method: 'POST'});
+    const data = await res.json();
+    if (!res.ok) { box.textContent = 'Ошибка: ' + (data.detail || res.status); return; }
+    let text =
+      `ALD Pro: подразделений — ${data.ald_departments_total}, пользователей с e-mail — ${data.ald_users_with_email} (без e-mail пропущено: ${data.ald_users_skipped_no_email})\n` +
+      `Яндекс 360: департаментов — ${data.y360_departments_total}, сотрудников — ${data.y360_users_total}\n\n` +
+      `Будет создано новых подразделений: ${data.new_departments.length}\n` +
+      data.new_departments.slice(0, 30).map(d => ' + ' + d.name + '  [' + d.dn + ']').join('\n') + '\n\n' +
+      `Будет создано новых пользователей: ${data.users_to_create.length}\n` +
+      data.users_to_create.slice(0, 30).map(u => ' + ' + u.login + ' <' + u.email + '> → dept ' + u.department).join('\n') + '\n\n' +
+      `Будет перенесено между подразделениями: ${data.users_to_move.length}\n` +
+      data.users_to_move.slice(0, 30).map(u => ' ~ ' + u.login + ': ' + u.from_department + ' → ' + u.to_department).join('\n') + '\n\n' +
+      `Сотрудников Яндекс 360, отсутствующих в ALD Pro${data.block_missing_users ? ' (будут заблокированы)' : ' (блокировка отключена)'}: ${data.users_missing_in_ald.length}\n` +
+      data.users_missing_in_ald.slice(0, 30).map(u => ' - ' + u.login + ' <' + (u.email || '') + '> dept ' + u.department).join('\n');
+    box.textContent = text || 'Нет изменений';
+  } catch (e) {
+    box.textContent = 'Ошибка предпросмотра: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Предпросмотр изменений';
+  }
+};

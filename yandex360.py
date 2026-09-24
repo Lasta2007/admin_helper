@@ -65,6 +65,21 @@ def _base_url() -> str:
     return API_HOSTS.get(host, API_HOSTS['cloud-api.yandex.net'])
 
 
+def api_base_url() -> str:
+    """Публичный доступ к базовому URL API (используется модулем синхронизации)."""
+    return _base_url()
+
+
+def make_async_client(base_url: str = None, headers: Dict[str, Any] = None) -> httpx.AsyncClient:
+    """Создать httpx-клиент для запросов к API Яндекс 360 (общие настройки TLS/timeout)."""
+    return httpx.AsyncClient(
+        base_url=base_url or _base_url(),
+        timeout=DEFAULT_TIMEOUT,
+        verify=False,
+        headers=headers or {},
+    )
+
+
 def get_settings() -> Dict[str, Any]:
     """Получить текущие настройки авторизации Яндекс 360."""
     return {

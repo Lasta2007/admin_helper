@@ -48,3 +48,19 @@ CREATE TABLE IF NOT EXISTS work_pc(
     csp_version TEXT DEFAULT '',
     created_at TEXT DEFAULT ''
 );
+
+-- Модуль Яндекс 360: соответствие OU ALD Pro -> департамент Яндекс 360
+-- (ключ вида 'dep:<dn>')
+CREATE TABLE IF NOT EXISTS y360_sync_map(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Модуль Яндекс 360: сопоставление пользователей ALD Pro и сотрудников 360
+CREATE TABLE IF NOT EXISTS y360_user_map(
+    login TEXT PRIMARY KEY,
+    email TEXT DEFAULT '',
+    ou_dn TEXT DEFAULT '',
+    dept_id TEXT DEFAULT '',
+    updated_at TEXT DEFAULT ''
+);
