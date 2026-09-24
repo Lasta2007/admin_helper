@@ -47,6 +47,9 @@ from ald_pro import (
     get_organizational_unit_users,
 )
 
+# Импортируем функции модуля Яндекс 360
+import yandex360
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +128,19 @@ class AldProConnectionTest(BaseModel):
     url: str
     login: str
     password: str
+
+
+class Yandex360Settings(BaseModel):
+    api_host: str = "cloud-api.yandex.net"
+    org_id: str = ""
+    oauth_token: str = ""
+    client_id: str = ""
+
+
+class Yandex360ConnectionTest(BaseModel):
+    api_host: str = "cloud-api.yandex.net"
+    org_id: str = ""
+    oauth_token: str = ""
 
 
 def validate_cidr(cidr: str):
@@ -1041,3 +1057,46 @@ async def api_get_organizational_unit_users(ou_dn: str):
     if result.get('success'):
         return result
     raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка получения данных'))
+
+
+# ============================================================================
+# Яндекс 360 API endpoints (модуль синхронизации ALD Pro <-> Яндекс 360)
+# ============================================================================
+
+@router.get("/yandex360/settings")
+def api_get_yandex360_settings():
+    """Получить настройки авторизации в API Яндекс 360."""
+    return yandex360.get_settings()
+
+
+@router.post("/yandex360/settings")
+def api_save_yandex360_settings(settings: Yandex360Settings):
+    """Сохранить настройки авторизации в API Яндекс 360."""
+    if yandex360.save_settings(
+        settings.api_host, settings.org_id, settings.oauth_token, settings.client_id
+    ):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Ошибка сохранения настроек")
+
+
+@router.post("/yandex360/test-connection")
+async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
+    """Проверить подключение к API Яндекс 360 (валидация OAuth-токена и org_id)."""
+    result = await yandex360.test_connection(
+        test_data.api_host, test_data.org_id, test_data.oauth_token
+    )
+    if result.get('success'):
+        # Сохраняем проверенные настройки
+        cur = yandex360.get_settings()
+        yandex360.save_settings(
+            test_data.api_host, test_data.org_id, test_data.oauth_token,
+            cur.get('client_id', '')
+        )
+        return result
+    raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка подключения'))
+
+
+@router.get("/yandex360/oauth-link")
+def api_yandex360_oauth_link(client_id: str = Query(..., description="ClientID OAuth-приложения")):
+    """Вернуть ссылку для получения OAuth-токена по ClientID."""
+    return {"link": yandex360.build_oauth_link(client_id)}
