@@ -47,6 +47,10 @@ from ald_pro import (
     get_organizational_unit_users,
 )
 
+# Импортируем функции модуля Яндекс 360
+import yandex360
+import sync360
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +129,27 @@ class AldProConnectionTest(BaseModel):
     url: str
     login: str
     password: str
+
+
+class Yandex360Settings(BaseModel):
+    api_host: str = "cloud-api.yandex.net"
+    org_id: str = ""
+    oauth_token: str = ""
+    client_id: str = ""
+
+
+class Yandex360ConnectionTest(BaseModel):
+    api_host: str = "cloud-api.yandex.net"
+    org_id: str = ""
+    oauth_token: str = ""
+
+
+class Yandex360SyncSettings(BaseModel):
+    root_ou_dn: str = ""
+    sync_interval_minutes: int = 60
+    email_domain: str = ""
+    block_missing_users: bool = True
+    parent_department_id: str = ""
 
 
 def validate_cidr(cidr: str):
@@ -1041,3 +1066,129 @@ async def api_get_organizational_unit_users(ou_dn: str):
     if result.get('success'):
         return result
     raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка получения данных'))
+
+
+# ============================================================================
+# Яндекс 360 API endpoints (модуль синхронизации ALD Pro <-> Яндекс 360)
+# ============================================================================
+
+@router.get("/yandex360/settings")
+def api_get_yandex360_settings():
+    """Получить настройки авторизации в API Яндекс 360."""
+    return yandex360.get_settings()
+
+
+@router.post("/yandex360/settings")
+def api_save_yandex360_settings(settings: Yandex360Settings):
+    """Сохранить настройки авторизации в API Яндекс 360."""
+    if yandex360.save_settings(
+        settings.api_host, settings.org_id, settings.oauth_token, settings.client_id
+    ):
+        return {"status": "ok"}
+    raise HTTPException(status_code=400, detail="Ошибка сохранения настроек")
+
+
+@router.post("/yandex360/test-connection")
+async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
+    """Проверить подключение к API Яндекс 360 (валидация OAuth-токена и org_id)."""
+    result = await yandex360.test_connection(
+        test_data.api_host, test_data.org_id, test_data.oauth_token
+    )
+    if result.get('success'):
+        # Сохраняем проверенные настройки
+        cur = yandex360.get_settings()
+        yandex360.save_settings(
+            test_data.api_host, test_data.org_id, test_data.oauth_token,
+            cur.get('client_id', '')
+        )
+        return result
+    raise HTTPException(status_code=400, detail=result.get('detail', 'Ошибка подключения'))
+
+
+@router.get("/yandex360/oauth-link")
+def api_yandex360_oauth_link(client_id: str = Query(..., description="ClientID OAuth-приложения")):
+    """Вернуть ссылку для получения OAuth-токена по ClientID."""
+    return {"link": yandex360.build_oauth_link(client_id)}
+
+
+# ---------------------------------------------------------------------------
+# Синхронизация пользователей и подразделений ALD Pro -> Яндекс 360
+# ---------------------------------------------------------------------------
+
+# Флаг выполнения синхронизации (защита от параллельных запусков)
+_y360_sync_lock = asyncio.Lock()
+_y360_sync_task: Optional[asyncio.Task] = None
+
+
+@router.get("/yandex360/sync/settings")
+def api_y360_sync_settings_get():
+    """Получить настройки синхронизации ALD Pro -> Яндекс 360."""
+    return sync360.get_sync_settings()
+
+
+@router.post("/yandex360/sync/settings")
+def api_y360_sync_settings_save(settings: Yandex360SyncSettings):
+    """Сохранить настройки синхронизации (корневой OU, интервал и т.д.)."""
+    saved = sync360.save_sync_settings(settings.dict())
+    return {"status": "ok", "settings": saved}
+
+
+@router.get("/yandex360/sync/status")
+def api_y360_sync_status():
+    """Статус последней/текущей синхронизации с Яндекс 360."""
+    settings = sync360.get_sync_settings()
+    last_ts = get_setting("y360_last_sync_ts")
+    next_at = None
+    if last_ts:
+        try:
+            next_at = int(last_ts) + settings["sync_interval_minutes"] * 60
+        except (TypeError, ValueError):
+            next_at = None
+    return {
+        "running": _y360_sync_lock.locked(),
+        "settings": settings,
+        "last_sync": sync360.get_last_sync_result(),
+        "last_sync_at": int(last_ts) if last_ts else None,
+        "next_sync_at": next_at,
+    }
+
+
+@router.post("/yandex360/sync/run")
+async def api_y360_sync_run():
+    """
+    Запустить синхронизацию ALD Pro -> Яндекс 360 вручную.
+
+    Выгружается структура подразделений начиная с заданного корневого OU,
+    пользователи ALD Pro, имеющие e-mail; выполняется перенос изменивших
+    подразделение пользователей и блокировка отсутствующих в ALD Pro.
+    """
+    global _y360_sync_task
+    if _y360_sync_lock.locked():
+        raise HTTPException(status_code=409, detail="Синхронизация уже выполняется")
+
+    async def _job():
+        async with _y360_sync_lock:
+            await sync360.run_full_sync(trigger="manual")
+
+    _y360_sync_task = asyncio.create_task(_job())
+    return {"status": "started",
+            "detail": "Синхронизация запущена. Следите за статусом: GET /api/yandex360/sync/status"}
+
+
+@router.post("/yandex360/sync/reset-map")
+def api_y360_sync_reset_map():
+    """Сбросить кэш соответствий OU/пользователей (например, при смене организации)."""
+    sync360.reset_sync_map()
+    return {"status": "ok"}
+
+
+@router.post("/yandex360/sync/preview")
+async def api_y360_sync_preview():
+    """
+    Предпросмотр синхронизации (dry-run): показать планируемые изменения
+    в Яндекс 360 без фактической записи.
+    """
+    try:
+        return await sync360.build_preview()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
