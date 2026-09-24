@@ -822,3 +822,113 @@ function renderAldProUsers(users, container) {
 document.addEventListener('DOMContentLoaded', function() {
   loadAldProSettings();
 });
+
+// ============================================================================
+// Яндекс 360 модуль (синхронизация пользователей и подразделений ALD Pro)
+// Настройки авторизации в API Яндекс 360
+// ============================================================================
+let y360Settings = {
+  api_host: 'cloud-api.yandex.net',
+  org_id: '',
+  oauth_token: '',
+  client_id: ''
+};
+
+// Загрузка настроек Яндекс 360 при старте
+async function loadYandex360Settings() {
+  try {
+    const res = await fetch('/api/yandex360/settings');
+    if (res.ok) {
+      const data = await res.json();
+      y360Settings = data;
+      document.getElementById('y360HostSelect').value = data.api_host || 'cloud-api.yandex.net';
+      document.getElementById('y360OrgIdInput').value = data.org_id || '';
+      document.getElementById('y360ClientIdInput').value = data.client_id || '';
+      document.getElementById('y360TokenInput').value = data.oauth_token || '';
+    }
+  } catch (e) {
+    console.error('Ошибка загрузки настроек Яндекс 360:', e);
+  }
+}
+
+// Сохранение настроек Яндекс 360
+document.getElementById('saveY360SettingsBtn').onclick = async () => {
+  const settings = {
+    api_host: document.getElementById('y360HostSelect').value,
+    org_id: document.getElementById('y360OrgIdInput').value.trim(),
+    client_id: document.getElementById('y360ClientIdInput').value.trim(),
+    oauth_token: document.getElementById('y360TokenInput').value.trim()
+  };
+
+  try {
+    const res = await fetch('/api/yandex360/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(settings)
+    });
+
+    if (res.ok) {
+      alert('Настройки Яндекс 360 сохранены');
+      y360Settings = settings;
+    } else {
+      const error = await res.json();
+      alert('Ошибка сохранения: ' + (error.detail || 'Неизвестная ошибка'));
+    }
+  } catch (e) {
+    console.error('Ошибка сохранения настроек Яндекс 360:', e);
+    alert('Ошибка при сохранении настроек');
+  }
+};
+
+// Проверка подключения к API Яндекс 360
+document.getElementById('testY360ConnectionBtn').onclick = async () => {
+  const settings = {
+    api_host: document.getElementById('y360HostSelect').value,
+    org_id: document.getElementById('y360OrgIdInput').value.trim(),
+    oauth_token: document.getElementById('y360TokenInput').value.trim()
+  };
+
+  try {
+    const res = await fetch('/api/yandex360/test-connection', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(settings)
+    });
+
+    const result = await res.json();
+    if (res.ok && result.success) {
+      alert('Подключение к Яндекс 360 успешно! ' + (result.detail || ''));
+    } else {
+      alert('Ошибка подключения: ' + (result.detail || 'Неизвестная ошибка'));
+    }
+  } catch (e) {
+    console.error('Ошибка проверки подключения к Яндекс 360:', e);
+    alert('Ошибка при проверке подключения');
+  }
+};
+
+// Ссылка для получения OAuth-токена по ClientID
+document.getElementById('y360GetTokenLinkBtn').onclick = async () => {
+  const clientId = document.getElementById('y360ClientIdInput').value.trim();
+  if (!clientId) {
+    alert('Сначала укажите ClientID OAuth-приложения (см. oauth.yandex.ru)');
+    return;
+  }
+  try {
+    const res = await fetch('/api/yandex360/oauth-link?client_id=' + encodeURIComponent(clientId));
+    if (res.ok) {
+      const data = await res.json();
+      window.open(data.link, '_blank');
+    } else {
+      alert('Ошибка получения ссылки');
+    }
+  } catch (e) {
+    console.error('Ошибка получения ссылки OAuth:', e);
+    alert('Ошибка при получении ссылки');
+  }
+};
+
+// Загружаем настройки Яндекс 360 при загрузке страницы
+document.addEventListener('DOMContentLoaded', function() {
+  loadYandex360Settings();
+});
