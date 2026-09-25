@@ -9,14 +9,12 @@ from fastapi.staticfiles import StaticFiles
 
 from database import init_db, get_networks, get_setting
 from api import router, ping_all_hosts_parallel, logger
-import sync360
+import sync360_new
 
 
 # Глобальная переменная для управления фоновой задачей
 background_task_running = False
 background_task = None
-y360_sync_task_running = False
-y360_sync_task = None
 
 
 async def background_ping_task():
@@ -66,47 +64,16 @@ async def background_ping_task():
             await asyncio.sleep(10)  # Пауза перед повторной попыткой
 
 
-async def y360_auto_sync_task():
-    """Фоновая задача периодической синхронизации ALD Pro -> Яндекс 360."""
-    global y360_sync_task_running
-    logger.info("[y360_auto_sync_task] Фоновая задача синхронизации Яндекс 360 запущена")
-
-    while y360_sync_task_running:
-        try:
-            settings = sync360.get_sync_settings()
-            interval_seconds = max(1, int(settings["sync_interval_minutes"])) * 60
-            root_dn = (settings.get("root_ou_dn") or "").strip()
-            if root_dn:
-                logger.info(f"[y360_auto_sync_task] Запуск авто-синхронизации Яндекс 360 (интервал: {settings['sync_interval_minutes']} мин)")
-                result = await sync360.run_full_sync(trigger="auto")
-                if not result.get("success"):
-                    logger.warning(f"[y360_auto_sync_task] Синхронизация завершилась с ошибками: {result.get('error')}")
-            else:
-                logger.info("[y360_auto_sync_task] Корневой OU не задан — синхронизация пропущена")
-            await asyncio.sleep(interval_seconds)
-        except asyncio.CancelledError:
-            logger.info("[y360_auto_sync_task] Задача отменена")
-            break
-        except Exception as e:
-            logger.error(f"[y360_auto_sync_task] Критическая ошибка: {e}")
-            await asyncio.sleep(60)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan контекст для запуска/остановки фоновых задач."""
     global background_task_running, background_task
-    global y360_sync_task_running, y360_sync_task
 
     # Запуск при старте приложения
     logger.info("[lifespan] Запуск приложения, старт фоновой задачи пинга")
     background_task_running = True
     background_task = asyncio.create_task(background_ping_task())
-
-    # Фоновая задача периодической синхронизации ALD Pro -> Яндекс 360
-    logger.info("[lifespan] Старт фоновой задачи синхронизации Яндекс 360")
-    y360_sync_task_running = True
-    y360_sync_task = asyncio.create_task(y360_auto_sync_task())
 
     yield
 
@@ -123,15 +90,6 @@ async def lifespan(app: FastAPI):
 
     logger.info("[lifespan] Фоновая задача пинга остановлена")
 
-    logger.info("[lifespan] Остановка фоновой задачи синхронизации Яндекс 360")
-    y360_sync_task_running = False
-    if y360_sync_task:
-        y360_sync_task.cancel()
-        try:
-            await y360_sync_task
-        except asyncio.CancelledError:
-            pass
-    logger.info("[lifespan] Фоновая задача синхронизации Яндекс 360 остановлена")
 
 
 # Создаем таблицы при запуске приложения

@@ -49,7 +49,6 @@ from ald_pro import (
 
 # Импортируем функции модуля Яндекс 360
 import yandex360
-import sync360
 import sync360_new
 
 # Настройка логирования
@@ -153,14 +152,6 @@ class Yandex360ConnectionTest(BaseModel):
     org_id: str = ""
     oauth_token: str = ""
     oauth_token_write: str = ""
-
-
-class Yandex360SyncSettings(BaseModel):
-    root_ou_dn: str = ""
-    sync_interval_minutes: int = 60
-    email_domain: str = ""
-    block_missing_users: bool = True
-    parent_department_id: str = ""
 
 
 def validate_cidr(cidr: str):
@@ -1177,84 +1168,6 @@ def api_yandex360_oauth_link(client_id: str = Query(..., description="ClientID O
 # ---------------------------------------------------------------------------
 
 # Флаг выполнения синхронизации (защита от параллельных запусков)
-_y360_sync_lock = asyncio.Lock()
-_y360_sync_task: Optional[asyncio.Task] = None
-
-
-@router.get("/yandex360/sync/settings")
-def api_y360_sync_settings_get():
-    """Получить настройки синхронизации ALD Pro -> Яндекс 360."""
-    return sync360.get_sync_settings()
-
-
-@router.post("/yandex360/sync/settings")
-def api_y360_sync_settings_save(settings: Yandex360SyncSettings):
-    """Сохранить настройки синхронизации (корневой OU, интервал и т.д.)."""
-    saved = sync360.save_sync_settings(settings.dict())
-    return {"status": "ok", "settings": saved}
-
-
-@router.get("/yandex360/sync/status")
-def api_y360_sync_status():
-    """Статус последней/текущей синхронизации с Яндекс 360."""
-    settings = sync360.get_sync_settings()
-    last_ts = get_setting("y360_last_sync_ts")
-    next_at = None
-    if last_ts:
-        try:
-            next_at = int(last_ts) + settings["sync_interval_minutes"] * 60
-        except (TypeError, ValueError):
-            next_at = None
-    return {
-        "running": _y360_sync_lock.locked(),
-        "settings": settings,
-        "last_sync": sync360.get_last_sync_result(),
-        "last_sync_at": int(last_ts) if last_ts else None,
-        "next_sync_at": next_at,
-    }
-
-
-@router.post("/yandex360/sync/run")
-async def api_y360_sync_run():
-    """
-    Запустить синхронизацию ALD Pro -> Яндекс 360 вручную.
-
-    Выгружается структура подразделений начиная с заданного корневого OU,
-    пользователи ALD Pro, имеющие e-mail; выполняется перенос изменивших
-    подразделение пользователей и блокировка отсутствующих в ALD Pro.
-    """
-    global _y360_sync_task
-    if _y360_sync_lock.locked():
-        raise HTTPException(status_code=409, detail="Синхронизация уже выполняется")
-
-    async def _job():
-        async with _y360_sync_lock:
-            await sync360.run_full_sync(trigger="manual")
-
-    _y360_sync_task = asyncio.create_task(_job())
-    return {"status": "started",
-            "detail": "Синхронизация запущена. Следите за статусом: GET /api/yandex360/sync/status"}
-
-
-@router.post("/yandex360/sync/reset-map")
-def api_y360_sync_reset_map():
-    """Сбросить кэш соответствий OU/пользователей (например, при смене организации)."""
-    sync360.reset_sync_map()
-    return {"status": "ok"}
-
-
-@router.post("/yandex360/sync/preview")
-async def api_y360_sync_preview():
-    """
-    Предпросмотр синхронизации (dry-run): показать планируемые изменения
-    в Яндекс 360 без фактической записи.
-    """
-    try:
-        return await sync360.build_preview()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
 # ---------------------------------------------------------------------------
 # Новый модуль синхронизации с нуля (sync360_new): ЭТАП 1 —
 # получение дерева подразделений Яндекс 360 и пользователей в них.
@@ -1316,6 +1229,26 @@ async def api_aldpro_tree_get(base_ou: str = Query(None, description=(
         raise HTTPException(status_code=400,
                             detail=result.get('error') or 'Ошибка получения дерева ALD Pro')
     return result
+
+
+class Yandex360AldTreeSettings(BaseModel):
+    """Настройки страницы «Яндекс 360» нового модуля (sync360_new)."""
+    root_ou_dn: str = ""
+
+
+@router.get("/yandex360/aldpro/tree/settings")
+def api_aldpro_tree_settings_get():
+    """Получить настройки дерева ALD Pro (базовый OU) нового модуля."""
+    return sync360_new.get_ald_sync_settings()
+
+
+@router.post("/yandex360/aldpro/tree/settings")
+def api_aldpro_tree_settings_save(settings: Yandex360AldTreeSettings):
+    """Сохранить базовый OU ALD Pro для построения дерева."""
+    saved = sync360_new.save_ald_sync_settings(
+        root_ou_dn=settings.root_ou_dn.strip() or None
+    )
+    return {"status": "ok", "settings": saved}
 
 
 @router.get("/yandex360/aldpro/tree/status")
