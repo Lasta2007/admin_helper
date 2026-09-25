@@ -12,8 +12,9 @@ ALD Pro (корень задаётся в настройках), и пользо
     корневые подразделения Яндекс 360 (без departmentId).
   * OU ALD Pro создаются в Яндекс 360 как департаменты
     (POST https://api360.yandex.net/directory/v1/org/{orgId}/departments —
-    метод DepartmentService_Create поддерживается ТОЛЬКО на хосте
-    api360.yandex.net), иерархия сохраняется через parentDepartmentId.
+    метод DepartmentService_Create поддерживается только на хосте
+    api360.yandex.net; выбор хоста выполняет yandex360.request()),
+    иерархия сохраняется через parentDepartmentId.
     Соответствие OU <-> департамент хранится в локальной БД
     (таблица y360_sync_map) и восстанавливается по примечанию
     департамента "ald_pro_dn=<dn>".
@@ -508,15 +509,17 @@ async def fetch_ald_state(root_dn: str,
 # ---------------------------------------------------------------------------
 # Чтение данных Яндекс 360
 #
-# ВАЖНО: у API Яндекс 360 два хоста с разными наборами методов
+# ВАЖНО: у API Яндекс 360 два хоста с РАЗНЫМИ наборами методов
 # (https://yandex.ru/dev/api360/doc/ru/):
-#   - https://api360.yandex.net  — основной хост Directory API, единственный
-#     поддерживает создание подразделений:
-#     POST /directory/v1/org/{orgId}/departments;
-#   - https://cloud-api.yandex.net — дополнительный хост (не все методы).
-# Все запросы выполняются через yandex360.request(), который сам выбирает
-# нужный хост (POST — всегда api360.yandex.net) и повторяет запрос на другом
-# хосте при 404/405.
+#   - https://api360.yandex.net  — основной хост Directory API. Здесь
+#     доступны UserService_List, DepartmentService_List,
+#     DepartmentService_Create (POST /directory/v1/org/{orgId}/departments)
+#     и остальные методы каталога;
+#   - https://cloud-api.yandex.net — другой шлюз (не зеркало): пути
+#     /directory/... здесь НЕ обслуживаются и возвращают
+#     HTTP 404 NotFoundError.
+# Все запросы выполняются через yandex360.request(), который по пути запроса
+# сам выбирает нужный хост (все /directory/... — всегда api360.yandex.net).
 # ---------------------------------------------------------------------------
 
 async def _paginate(method: str, path: str, org_id: str,
@@ -530,10 +533,18 @@ async def _paginate(method: str, path: str, org_id: str,
             params={'org_id': org_id, 'limit': PAGE_LIMIT,
                     'offset': offset, **(params or {})})
         if resp.status_code != 200:
+            hint = ''
+            if resp.status_code == 404:
+                url_host = str(resp.request.url).split('/')[2]
+                hint = (" Проверьте org_id и права токена "
+                        "(directory:read_users / directory:read_departments)"
+                        if url_host == 'api360.yandex.net' else
+                        " Запрос ушёл не на api360.yandex.net — "
+                        "проверьте настройки хоста в модуле")
             raise RuntimeError(
-                "Яндекс 360 вернул HTTP %s при %s %s (%s): %s"
+                "Яндекс 360 вернул HTTP %s при %s %s (%s): %s%s"
                 % (resp.status_code, method, resp.request.url,
-                   resp.headers.get('allow', '-'), resp.text[:200]))
+                   resp.headers.get('allow', '-'), resp.text[:200], hint))
         body = resp.json() or {}
         page = body.get('items') or []
         items.extend(page)
@@ -612,8 +623,8 @@ async def sync_departments(ous: List[dict], y360_state: dict,
       настроек вешаются на него).
     - Недостающие подразделения СОЗДАЮТСЯ через DepartmentService_Create
       (POST https://api360.yandex.net/directory/v1/org/{orgId}/departments —
-      метод поддерживается только на хосте api360.yandex.net; выбор хоста
-      выполняет yandex360.create_department/request), иерархия сохраняется
+      пути Directory API обслуживаются только хостом api360.yandex.net;
+      выбор хоста выполняет yandex360.create_department/request), иерархия сохраняется
       через parentDepartmentId. Созданные подразделения сразу добавляются в
       y360_state, чтобы дети и пользователи обрабатывались в этом же проходе.
       Примечание "ald_pro_dn=<dn>" пишется сразу при создании (и дорабатывается
@@ -759,16 +770,17 @@ async def sync_departments(ous: List[dict], y360_state: dict,
                 create_failed_perm = True
                 report['errors'].append(
                     "DepartmentService_Create вернул HTTP %s (%s): %s. "
-                    "Метод создания подразделений поддерживается только на "
-                    "хосте https://api360.yandex.net (запрос отправлялся на %s) "
-                    "и доступен только при авторизации токеном корпоративного "
-                    "приложения с правом directory:write_departments (обычный "
-                    "OAuth-токен «личного» приложения возвращает 405 "
-                    "MethodNotAllowedError). Укажите токен с правами записи в "
-                    "поле «Токен для записи» (на странице настроек Яндекс 360) "
-                    "и повторите синхронизацию. Оставшиеся подразделения "
-                    "помещены в план создания."
-                    % (status, url_used, detail[:120]))
+                    "Запрос выполнялся на хосте https://api360.yandex.net — "
+                    "именно там поддерживается создание подразделений; "
+                    "HTTP %s означает, что у токена нет права "
+                    "directory:write_departments (обычный OAuth-токен "
+                    "«личного» приложения возвращает 405 "
+                    "MethodNotAllowedError). Укажите токен корпоративного "
+                    "приложения с правами записи в поле «Токен для записи» "
+                    "(на странице настроек Яндекс 360) и повторите "
+                    "синхронизацию. Оставшиеся подразделения помещены в "
+                    "план создания."
+                    % (status, url_used, status, detail[:120]))
             else:
                 report['errors'].append(
                     "Не удалось создать подразделение '%s' в Яндекс 360 "
@@ -810,7 +822,8 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
 
     Создание НОВЫХ сотрудников выполняется через UserService_Create
     (POST /directory/v1/org/{orgId}/users — через yandex360.request(),
-    который для POST всегда использует основной хост api360.yandex.net)
+    который для путей Directory API всегда использует основной хост
+    api360.yandex.net)
     с логином ALD Pro, именем из ALD Pro и назначением подразделения сразу
     при создании (departmentId). Пароль задаётся заглушкой, письмо-приглашение
     не рассылается (в текущей версии API флаг sendEmail не поддерживается).
@@ -867,8 +880,9 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
         """Создать сотрудника (UserService_Create).
 
         POST выполняется через yandex360.create_employee -> request(),
-        который всегда отправляет создающие запросы на основной хост
-        api360.yandex.net (на cloud-api.yandex.net метод недоступен).
+        который отправляет все запросы Directory API на основной хост
+        api360.yandex.net (на cloud-api.yandex.net эти пути не
+        обслуживаются — 404).
         """
         async with sem:
             return await yandex360.create_employee(
@@ -1152,11 +1166,11 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         y360_state = await fetch_y360_state()
 
         # 3. Запись изменений в Яндекс 360: подразделения создаются через
-        #    DepartmentService_Create (ТОЛЬКО хост api360.yandex.net),
-        #    сотрудники — через UserService_Create. Выбор хоста для каждого
-        #    запроса выполняет yandex360.request(): POST всегда уходит на
-        #    api360.yandex.net, остальные методы — на хост из настроек с
-        #    автоматическим повтором на другом хосте при 404/405.
+        #    DepartmentService_Create, сотрудники — через UserService_Create.
+        #    Выбор хоста для каждого запроса выполняет yandex360.request():
+        #    все пути Directory API (/directory/...) уходят на основной хост
+        #    https://api360.yandex.net — только там они обслуживаются
+        #    (на cloud-api.yandex.net возвращаются 404 NotFoundError).
         # Отдельный токен для операций записи (создание подразделений и
         # сотрудников). Если не задан — используется основной oauth_token.
         write_token = (yandex360.get_write_token() or token).strip()
