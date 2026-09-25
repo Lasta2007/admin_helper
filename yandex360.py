@@ -209,8 +209,14 @@ def resolve_base_url(path: str, method: str = 'GET',
     return base_url or _base_url()
 
 
+def _has_auth_header(kwargs: dict) -> bool:
+    headers = kwargs.get('headers') or {}
+    return any(str(k).lower() == 'authorization' for k in headers.keys())
+
+
 async def request(method: str, path: str, *, base_url: str = None,
-                  fallback: bool = False, **kwargs) -> httpx.Response:
+                  fallback: bool = False, token: str = None,
+                  **kwargs) -> httpx.Response:
     """Выполнить асинхронный запрос к API Яндекс 360 с учетом двух хостов.
 
     У хостов api360.yandex.net и cloud-api.yandex.net РАЗНЫЕ наборы
@@ -229,6 +235,19 @@ async def request(method: str, path: str, *, base_url: str = None,
     Возвращает httpx.Response. Вызывать внутри уже запущенного event loop.
     """
     method = method.upper()
+    # Если вызывающий код не передал заголовок Authorization явно, добавляем
+    # его автоматически (иначе запрос уходит без токена и api360.yandex.net
+    # отвечает 401 «Не авторизован» даже при корректно настроенном хосте).
+    if not _has_auth_header(kwargs):
+        tok = (token or _y360_settings.get('oauth_token') or '').strip()
+        if not tok and path.startswith(DIRECTORY_PATH_PREFIX):
+            raise RuntimeError(
+                'OAuth-токен Яндекс 360 не задан: укажите его в настройках '
+                'интеграции («Токен приложения Яндекс ID»), иначе все запросы '
+                'Directory API вернут HTTP 401 «Не авторизован».')
+        merged = dict(kwargs.get('headers') or {})
+        merged.update(auth_headers(token))
+        kwargs['headers'] = merged
     first = resolve_base_url(path, method, base_url)
     retry = None
     if fallback and base_url is None:
