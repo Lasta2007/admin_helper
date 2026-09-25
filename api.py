@@ -50,6 +50,7 @@ from ald_pro import (
 # Импортируем функции модуля Яндекс 360
 import yandex360
 import sync360
+import sync360_new
 
 # Настройка логирования
 logging.basicConfig(
@@ -1252,3 +1253,40 @@ async def api_y360_sync_preview():
         return await sync360.build_preview()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Новый модуль синхронизации с нуля (sync360_new): ЭТАП 1 —
+# получение дерева подразделений Яндекс 360 и пользователей в них.
+# ---------------------------------------------------------------------------
+
+@router.get("/yandex360/tree")
+async def api_y360_tree_get():
+    """Получить дерево подразделений организации Яндекс 360.
+
+    Запрашивает DepartmentService_List и UserService_List
+    (https://api360.yandex.net/directory/v1/org/{orgId}/departments|users),
+    строит дерево и распределяет сотрудников по подразделениям.
+
+    Возвращает:
+      * json — машиночитаемое дерево: каждому узлу соответствуют
+        id (идентификатор подразделения) и parentId («childID» — id
+        родительского подразделения; для корневых = 0);
+      * text — наглядное ASCII-представление вида
+        «Название (id=..., childID=...) [сотрудников: N]»;
+      * stats — сводка (подразделений, корней, пользователей и т.д.).
+    """
+    try:
+        result = await sync360_new.get_y360_tree()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result.get('success'):
+        raise HTTPException(status_code=400,
+                            detail=result.get('error') or 'Ошибка получения дерева')
+    return result
+
+
+@router.get("/yandex360/tree/status")
+def api_y360_tree_status():
+    """Статус последней операции построения дерева Яндекс 360."""
+    return sync360_new.get_last_status()
