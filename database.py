@@ -162,6 +162,44 @@ def migrate_db():
         """)
         logger.info("[migrate_db] Таблица 'work_pc' создана")
 
+    # Создаем таблицу y360_sync_map если не существует (модуль Яндекс 360:
+    # соответствие OU ALD Pro -> департамент Яндекс 360)
+    if not _table_exists(cursor, 'y360_sync_map'):
+        cursor.execute("""
+        CREATE TABLE y360_sync_map(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'y360_sync_map' создана")
+
+    # Создаем таблицу y360_user_map если не существует (модуль Яндекс 360:
+    # сопоставление пользователей ALD Pro и сотрудников Яндекс 360)
+    if not _table_exists(cursor, 'y360_user_map'):
+        cursor.execute("""
+        CREATE TABLE y360_user_map(
+            login TEXT PRIMARY KEY,
+            email TEXT DEFAULT '',
+            ou_dn TEXT DEFAULT '',
+            dept_id TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'y360_user_map' создана")
+
+    # Единое хранилище настроек модулей (JSON-документы). Настройки всех
+    # модулей (Яндекс 360, синхронизация, ALD Pro) лежат здесь, а не в
+    # коде, поэтому не перезаписываются при слиянии веток git.
+    if not _table_exists(cursor, 'module_settings'):
+        cursor.execute("""
+        CREATE TABLE module_settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT DEFAULT ''
+        )
+        """)
+        logger.info("[migrate_db] Таблица 'module_settings' создана")
+
     conn.commit()
     conn.close()
     logger.info("[migrate_db] Миграция базы данных завершена")
@@ -604,3 +642,57 @@ def get_all_settings():
     conn.close()
 
     return {row["key"]: row["value"] for row in rows}
+
+
+# ----------------------------------------------------
+# Module settings (JSON-документы настроек модулей)
+# ----------------------------------------------------
+# Хранятся в отдельной таблице module_settings: каждое значение — JSON.
+# Настройки живут в БД (admin_helper.db), а не в коде/файлах репозитория,
+# поэтому не перезаписываются при слиянии веток git и не попадают в diff.
+
+def get_module_settings(key: str, default=None):
+    """Прочитать настройки модуля (JSON-документ) из таблицы module_settings."""
+    conn = get_connection()
+    try:
+        if not _table_exists(conn.cursor(), 'module_settings'):
+            return default if default is not None else {}
+        row = conn.execute(
+            "SELECT value FROM module_settings WHERE key=?", (key,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return default if default is not None else {}
+
+    import json
+    try:
+        data = json.loads(row["value"])
+        return data if isinstance(data, dict) else (default or {})
+    except (ValueError, TypeError):
+        logger.warning(f"[get_module_settings] Неверный JSON в настройках '{key}'")
+        return default if default is not None else {}
+
+
+def set_module_settings(key: str, data: dict):
+    """Сохранить настройки модуля (JSON-документ) в таблицу module_settings."""
+    import json
+    conn = get_connection()
+    try:
+        # Таблица создаётся в migrate_db(); на случай прямого вызова до
+        # миграции гарантируем её наличие здесь.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS module_settings(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            INSERT OR REPLACE INTO module_settings(key, value, updated_at)
+            VALUES(?, ?, datetime('now'))
+        """, (key, json.dumps(data, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
