@@ -14,11 +14,25 @@
 - Токен передается в HTTP-заголовке каждого запроса:
       Authorization: OAuth <OAuth-токен>
 
-Основные эндпоинты Directory API, используемые для синхронизации:
-- GET /v1/directory/organizations/{org_id}/users        — список сотрудников
-- GET /v1/directory/organizations/{org_id}/departments  — список подразделений
-- GET /v1/directory/organizations/{org_id}/departments/{dep_id} — о подразделении
-- PATCH /v1/directory/organizations/{org_id}/users/{login}      — изменить сотрудника
+Основные эндпоинты Directory API, используемые для синхронизации
+(https://yandex.ru/dev/api360/doc/ru/ref/DepartmentService/ и UserService/):
+- GET    /v1/directory/organizations/{org_id}/users         — список сотрудников
+- POST   /v1/directory/organizations/{org_id}/users         — создать сотрудника
+           (UserService_Create)
+- PATCH  /v1/directory/organizations/{org_id}/users/{login} — изменить сотрудника
+           (UserService_Update: departmentId, blocked и т.д.)
+- GET    /v1/directory/organizations/{org_id}/departments   — список подразделений
+- POST   /v1/directory/organizations/{org_id}/departments   — СОЗДАТЬ подразделение
+           (DepartmentService_Create: name, parentDepartmentId, note)
+- GET    /v1/directory/organizations/{org_id}/departments/{dep_id} — о подразделении
+- PATCH  /v1/directory/organizations/{org_id}/departments/{dep_id} — изменить
+           подразделение (DepartmentService_Update)
+
+Для создания подразделений и сотрудников у OAuth-приложения должны быть
+выданы права directory:write_departments и directory:write_users. Если при
+POST возвращается HTTP 405 MethodNotAllowedError — как правило, это признак
+устаревшего хоста api360.yandex.net (нужен cloud-api.yandex.net) либо
+отсутствия прав записи у токена.
 """
 import base64
 import logging
@@ -275,6 +289,39 @@ async def get_departments(limit: int = 100, offset: int = 0) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Ошибка получения подразделений Яндекс 360: {e}")
         return {'success': False, 'detail': f'Ошибка: {e}'}
+
+
+async def create_department(client: 'httpx.AsyncClient', org_id: str,
+                            name: str, parent_department_id=None,
+                            note: str = '') -> Dict[str, Any]:
+    """Создать подразделение (DepartmentService_Create).
+
+    POST /v1/directory/organizations/{org_id}/departments?org_id={org_id}
+    Тело: {"name": str, "parentDepartmentId": int|null, "note": str}.
+    Возвращает dict c 'success' и 'id' созданного подразделения.
+    Требуется право OAuth directory:write_departments.
+    """
+    payload: Dict[str, Any] = {'name': (name or '').strip()[:150]}
+    if parent_department_id not in (None, '', 0, '0'):
+        try:
+            payload['parentDepartmentId'] = int(parent_department_id)
+        except (TypeError, ValueError):
+            payload['parentDepartmentId'] = str(parent_department_id)
+    else:
+        payload['parentDepartmentId'] = None
+    if note:
+        payload['note'] = note[:200]
+    url = f"/v1/directory/organizations/{org_id}/departments"
+    resp = await client.post(url, params={'org_id': org_id}, json=payload)
+    if resp.status_code not in (200, 201):
+        return {'success': False,
+                'status': resp.status_code,
+                'detail': resp.text[:300]}
+    body = resp.json() or {}
+    dep = body.get('department') or body
+    new_id = dep.get('id') or body.get('id')
+    return {'success': True, 'id': str(new_id) if new_id is not None else '',
+            'data': body}
 
 
 async def get_users(limit: int = 100, offset: int = 0) -> Dict[str, Any]:
