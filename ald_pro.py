@@ -13,12 +13,33 @@ def _encode_dn(dn: str) -> str:
     """Кодирует DN для безопасного использования в URL-пути."""
     return quote(dn, safe='')
 
-# Глобальное хранилище настроек и сессий
-_aldpro_settings = {
+# Глобальное хранилище настроек и сессий. Фактическое место хранения
+# настроек — БД (таблица module_settings, ключ 'aldpro_settings'), чтобы
+# они не перезаписывались при слиянии веток git и не терялись после
+# перезапуска сервиса. Здесь только кэш.
+SETTINGS_KEY = 'aldpro_settings'
+
+DEFAULT_SETTINGS = {
     'url': '',
     'login': '',
     'password': ''
 }
+
+
+def _load_from_db() -> Dict[str, Any]:
+    """Прочитать настройки ALD Pro из БД (объединённые с дефолтом)."""
+    result = dict(DEFAULT_SETTINGS)
+    try:
+        from database import get_module_settings
+        stored = get_module_settings(SETTINGS_KEY)
+        if isinstance(stored, dict):
+            result.update({k: v for k, v in stored.items() if k in DEFAULT_SETTINGS})
+    except Exception as e:
+        logger.error(f"Ошибка чтения настроек ALD Pro из БД: {e}")
+    return result
+
+
+_aldpro_settings = _load_from_db()
 _aldpro_cookies = {}
 
 
@@ -32,12 +53,18 @@ def get_settings() -> Dict[str, Any]:
 
 
 def save_settings(url: str, login: str, password: str) -> bool:
-    """Сохранить настройки ALD Pro."""
+    """Сохранить настройки ALD Pro (в БД, таблицу module_settings)."""
     global _aldpro_settings
     _aldpro_settings['url'] = url
     _aldpro_settings['login'] = login
     _aldpro_settings['password'] = password
-    logger.info(f"Настройки ALD Pro сохранены: URL={url}, Login={login}")
+    try:
+        from database import set_module_settings
+        set_module_settings(SETTINGS_KEY, dict(_aldpro_settings))
+    except Exception as e:
+        logger.error(f"Не удалось сохранить настройки ALD Pro в БД: {e}")
+        return False
+    logger.info(f"Настройки ALD Pro сохранены в БД: URL={url}, Login={login}")
     return True
 
 

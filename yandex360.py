@@ -50,13 +50,34 @@ REQUIRED_OAUTH_SCOPES = [
 
 DEFAULT_TIMEOUT = 30.0
 
-# Глобальное хранилище настроек авторизации в API Яндекс 360
-_y360_settings = {
+# Глобальное хранилище настроек авторизации в API Яндекс 360.
+# Фактическое место хранения — БД (таблица module_settings, ключ
+# 'y360_api_settings'), чтобы настройки не перезаписывались при слиянии
+# веток git и не терялись после перезапуска сервиса. Здесь только кэш.
+SETTINGS_KEY = 'y360_api_settings'
+
+DEFAULT_SETTINGS = {
     'api_host': 'cloud-api.yandex.net',  # хост API (cloud-api.yandex.net / api360.yandex.net)
     'org_id': '',                        # идентификатор организации (org_id)
     'oauth_token': '',                   # OAuth-токен приложения Яндекс ID
     'client_id': '',                     # ClientID OAuth-приложения (для справки/получения токена)
 }
+
+
+def _load_from_db() -> Dict[str, Any]:
+    """Прочитать настройки из БД (объединённые с дефолтом)."""
+    result = dict(DEFAULT_SETTINGS)
+    try:
+        from database import get_module_settings
+        stored = get_module_settings(SETTINGS_KEY)
+        if isinstance(stored, dict):
+            result.update({k: v for k, v in stored.items() if k in DEFAULT_SETTINGS})
+    except Exception as e:
+        logger.error(f"Ошибка чтения настроек Яндекс 360 из БД: {e}")
+    return result
+
+
+_y360_settings = _load_from_db()
 
 
 def _base_url() -> str:
@@ -92,7 +113,7 @@ def get_settings() -> Dict[str, Any]:
 
 def save_settings(api_host: str, org_id: str, oauth_token: str,
                   client_id: str = '') -> bool:
-    """Сохранить настройки авторизации Яндекс 360."""
+    """Сохранить настройки авторизации Яндекс 360 (в БД, таблицу module_settings)."""
     global _y360_settings
     if api_host not in API_HOSTS:
         api_host = 'cloud-api.yandex.net'
@@ -100,8 +121,14 @@ def save_settings(api_host: str, org_id: str, oauth_token: str,
     _y360_settings['org_id'] = str(org_id).strip()
     _y360_settings['oauth_token'] = oauth_token.strip()
     _y360_settings['client_id'] = client_id.strip()
+    try:
+        from database import set_module_settings
+        set_module_settings(SETTINGS_KEY, dict(_y360_settings))
+    except Exception as e:
+        logger.error(f"Не удалось сохранить настройки Яндекс 360 в БД: {e}")
+        return False
     logger.info(
-        f"Настройки Яндекс 360 сохранены: host={api_host}, org_id={org_id}"
+        f"Настройки Яндекс 360 сохранены в БД: host={api_host}, org_id={org_id}"
     )
     return True
 

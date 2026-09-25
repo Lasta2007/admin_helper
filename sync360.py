@@ -32,12 +32,13 @@ import asyncio
 import json
 import logging
 import re
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
 import ald_pro
 import yandex360
-from database import get_setting, set_setting
+from database import get_setting, set_setting, DB_PATH
 
 logger = logging.getLogger('admin_helper')
 
@@ -64,15 +65,21 @@ API_CONCURRENCY = 4
 
 
 def get_sync_settings() -> Dict[str, Any]:
-    """Получить настройки синхронизации (объединённые с дефолтом)."""
+    """Получить настройки синхронизации (объединённые с дефолтом).
+
+    Хранятся в БД: таблица module_settings (ключ 'y360_sync_settings'),
+    устаревшее расположение в таблице settings читается для совместимости.
+    """
     result = dict(DEFAULT_SETTINGS)
     try:
-        stored = get_setting(SETTINGS_KEY)
-        if stored:
-            data = json.loads(stored)
-            if isinstance(data, dict):
-                result.update({k: v for k, v in data.items()
-                               if k in DEFAULT_SETTINGS})
+        from database import get_module_settings
+        stored = get_module_settings(SETTINGS_KEY)
+        if not stored:  # совместимость со старым расположением (таблица settings)
+            legacy = get_setting(SETTINGS_KEY)
+            stored = json.loads(legacy) if legacy else {}
+        if isinstance(stored, dict):
+            result.update({k: v for k, v in stored.items()
+                           if k in DEFAULT_SETTINGS})
     except Exception as e:
         logger.error(f"Ошибка чтения настроек синхронизации Яндекс 360: {e}")
     try:
@@ -84,13 +91,14 @@ def get_sync_settings() -> Dict[str, Any]:
 
 
 def save_sync_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Сохранить настройки синхронизации."""
+    """Сохранить настройки синхронизации в БД (таблицу module_settings)."""
+    from database import set_module_settings
     current = get_sync_settings()
     for key in DEFAULT_SETTINGS:
         if key in settings and settings[key] is not None:
             current[key] = settings[key]
-    set_setting(SETTINGS_KEY, json.dumps(current, ensure_ascii=False))
-    logger.info("Настройки синхронизации Яндекс 360 сохранены: root_ou=%s, "
+    set_module_settings(SETTINGS_KEY, current)
+    logger.info("Настройки синхронизации Яндекс 360 сохранены в БД: root_ou=%s, "
                 "interval=%s мин", current['root_ou_dn'],
                 current['sync_interval_minutes'])
     return current
@@ -98,51 +106,86 @@ def save_sync_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Хранилище соответствий OU <-> департамент / пользователь <-> сотрудник
-# (в таблицах y360_sync_map и y360_user_map, см. schema.sql)
+# (в таблицах y360_sync_map и y360_user_map, см. schema.sql).
+# Работаем через database.get_connection(): в модуле database НЕТ функции
+# get_db(), поэтому используем правильное имя (ошибка прошлой версии:
+# "cannot import name 'get_db' from 'database'").
 # ---------------------------------------------------------------------------
 
 def _db():
-    from database import get_db
-    return get_db()
+    """Вернуть новое sqlite-соединение с основной БД (row_factory=Row)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _map_get(key: str) -> Optional[str]:
-    row = _db().execute(
-        "SELECT value FROM y360_sync_map WHERE key = ?", (key,)).fetchone()
-    return row['value'] if row else None
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT value FROM y360_sync_map WHERE key = ?", (key,)).fetchone()
+        return row['value'] if row else None
+    finally:
+        conn.close()
 
 
 def _map_set(key: str, value: str):
-    with _db() as conn:
-        conn.execute(
-            "INSERT INTO y360_sync_map (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value))
+    conn = _db()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO y360_sync_map (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value))
+    finally:
+        conn.close()
 
 
 def _user_map_get(login: str) -> Optional[dict]:
-    row = _db().execute(
-        "SELECT * FROM y360_user_map WHERE login = ?",
-        (login.lower(),)).fetchone()
-    return dict(row) if row else None
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM y360_user_map WHERE login = ?",
+            (login.lower(),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def _user_map_set(login: str, email: str, ou_dn: str, dept_id: str):
-    with _db() as conn:
-        conn.execute(
-            "INSERT INTO y360_user_map (login, email, ou_dn, dept_id, updated_at) "
-            "VALUES (?, ?, ?, ?, datetime('now')) "
-            "ON CONFLICT(login) DO UPDATE SET email = excluded.email, "
-            "ou_dn = excluded.ou_dn, dept_id = excluded.dept_id, "
-            "updated_at = excluded.updated_at",
-            (login.lower(), email, ou_dn, dept_id))
+    conn = _db()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO y360_user_map (login, email, ou_dn, dept_id, updated_at) "
+                "VALUES (?, ?, ?, ?, datetime('now')) "
+                "ON CONFLICT(login) DO UPDATE SET email = excluded.email, "
+                "ou_dn = excluded.ou_dn, dept_id = excluded.dept_id, "
+                "updated_at = excluded.updated_at",
+                (login.lower(), email, ou_dn, dept_id))
+    finally:
+        conn.close()
 
 
 def reset_sync_map():
     """Сбросить кэш соответствий (например, после смены организации)."""
-    with _db() as conn:
-        conn.execute("DELETE FROM y360_sync_map")
-        conn.execute("DELETE FROM y360_user_map")
+    conn = _db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM y360_sync_map")
+            conn.execute("DELETE FROM y360_user_map")
+    finally:
+        conn.close()
+
+
+def _managed_logins() -> set:
+    """Логины пользователей, сопоставленных этим сервисом (y360_user_map)."""
+    conn = _db()
+    try:
+        return {row['login'].lower() for row in
+                conn.execute("SELECT login FROM y360_user_map")}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -577,8 +620,7 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
     # (по y360_user_map или примечанию ald_pro_uid=), чтобы не блокировать
     # произвольные учетные записи организации.
     if settings.get('block_missing_users'):
-        managed_logins = {row['login'].lower() for row in
-                          _db().execute("SELECT login FROM y360_user_map")}
+        managed_logins = _managed_logins()
         for emp in employees:
             login = emp['login'].lower()
             if not login or login in processed_logins:
@@ -774,8 +816,7 @@ async def build_preview() -> Dict[str, Any]:
             })
 
     # Существующие сотрудники Яндекс 360: проверка наличия в ALD Pro
-    managed_logins = {row['login'].lower() for row in
-                      _db().execute("SELECT login FROM y360_user_map")}
+    managed_logins = _managed_logins()
     users_missing_in_ald = []
     for e in y360_state['employees']:
         login = e['login'].lower()

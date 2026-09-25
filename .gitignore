@@ -1,3 +1,9 @@
+# Compiled and build artifacts
 __pycache__/
 *.pyc
+
+# Dependencies
 venv/
+
+# Logs and temp files
+*.log
