@@ -121,22 +121,87 @@ async def test_connection(url: str, login: str, password: str) -> Dict[str, Any]
         return {'success': False, 'detail': f'Ошибка: {str(e)}'}
 
 
+def _clear_session():
+    """Сбросить сохранённую сессию ALD Pro (cookies) — при истечении токена."""
+    global _aldpro_cookies
+    _aldpro_cookies = {}
+
+
+async def do_login(client: httpx.AsyncClient, url: str, login: str,
+                   password: str) -> bool:
+    """Выполнить вход в ALD Pro для переданного клиента.
+
+    Настройки при этом НЕ перезаписываются (в отличие от test_connection).
+    """
+    base_url = url.rstrip('/')
+    try:
+        response = await client.post(
+            f"{base_url}/api/ds/login",
+            json={"data": {"login": login, "password": password}},
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json"},
+        )
+        if response.status_code == 200 and response.json().get('success'):
+            global _aldpro_cookies
+            _aldpro_cookies = dict(client.cookies)
+            logger.info(f"Успешная авторизация в ALD Pro: {base_url}")
+            return True
+        logger.warning("Не удалось войти в ALD Pro (HTTP %s): %s",
+                       response.status_code, response.text[:200])
+    except Exception as e:
+        logger.error(f"Ошибка авторизации в ALD Pro: {e}")
+    return False
+
+
 async def _get_authenticated_client() -> Optional[httpx.AsyncClient]:
-    """Создать аутентифицированный клиент для запросов к ALD Pro."""
+    """Создать аутентифицированный клиент для запросов к ALD Pro.
+
+    Сессия ALD Pro живёт ограниченное время, поэтому проверяем её реальным
+    запросом и при 401/403 выполняем повторный вход по сохранённому логину и
+    паролю. Без этого после истечения сессии получали "HTTP 401" на
+    /api/ds/organizational-units/catalogue/children.
+    """
     if not _aldpro_settings.get('url') or not _aldpro_settings.get('login'):
+        logger.warning("ALD Pro: настройки доступа не заполнены")
         return None
-    
+
     base_url = _aldpro_settings['url'].rstrip('/')
     client = httpx.AsyncClient(
         base_url=base_url,
         verify=False,
         timeout=30.0,
-        cookies=_aldpro_cookies
+        follow_redirects=False,
+        cookies=dict(_aldpro_cookies),
     )
     client.headers.update({
         "Content-Type": "application/json",
         "Accept": "application/json"
     })
+
+    for _attempt in range(2):
+        try:
+            probe = await client.get(
+                "/api/ds/organizational-units/catalogue/children")
+        except Exception as e:
+            logger.error(f"ALD Pro недоступен ({base_url}): {e}")
+            await client.aclose()
+            return None
+        if probe.status_code in (401, 403):
+            logger.warning(
+                "Сессия ALD Pro недействительна (HTTP %s) — повторяю вход",
+                probe.status_code)
+            _clear_session()
+            ok = await do_login(client, base_url,
+                                _aldpro_settings['login'],
+                                _aldpro_settings.get('password', ''))
+            if not ok:
+                logger.error("Повторная авторизация в ALD Pro не удалась — "
+                             "проверьте логин/пароль в настройках ALD Pro")
+                await client.aclose()
+                return None
+            continue
+        break
+
     return client
 
 
@@ -177,6 +242,27 @@ def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _shared_client = None
+
+
+async def _relogin(client: httpx.AsyncClient) -> bool:
+    """Перевойти в ALD Pro внутри существующего клиента (сессия истекла)."""
+    base_url = _aldpro_settings.get('url', '').rstrip('/')
+    if not base_url or not _aldpro_settings.get('login'):
+        return False
+    _clear_session()
+    return await do_login(client, base_url, _aldpro_settings['login'],
+                          _aldpro_settings.get('password', ''))
+
+
+async def invalidate_shared_client():
+    """Закрыть общий клиент, чтобы следующий запрос авторизовался заново."""
+    global _shared_client
+    if _shared_client is not None:
+        try:
+            await _shared_client.aclose()
+        except Exception:
+            pass
+        _shared_client = None
 
 
 def _client_alive(client) -> bool:
@@ -223,8 +309,13 @@ async def _fetch_children(client: httpx.AsyncClient, ou_dn: str) -> list:
     children_url = f"/api/ds/organizational-units/{_encode_dn(ou_dn)}/organizational-units"
     logger.info(f"Запрос к ALD Pro: GET {children_url}")
     response = await client.get(children_url)
+    if response.status_code in (401, 403):
+        # Сессия истекла — перелогиниваемся в этом же клиенте и повторяем запрос
+        if await _relogin(client):
+            response = await client.get(children_url)
     if response.status_code != 200:
-        logger.warning(f"Не удалось получить дочерние подразделения для {ou_dn}: {response.status_code}")
+        logger.warning(f"Не удалось получить дочерние подразделения для {ou_dn}: "
+                       f"HTTP {response.status_code}")
         return []
     data = response.json()
     if not data.get('success'):
@@ -561,7 +652,11 @@ async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, An
 
         endpoint = f"/api/ds/organizational-units/{_encode_dn(decoded_dn)}/users-list"
         response = await client.get(endpoint)
-        
+
+        if response.status_code in (401, 403):
+            # Сессия могла истечь во время обхода дерева OU — перелогиниваемся
+            if await _relogin(client):
+                response = await client.get(endpoint)
         if response.status_code == 200:
             return response.json()
         else:
