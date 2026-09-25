@@ -6,13 +6,18 @@
 ALD Pro (корень задаётся в настройках), и пользователей из этого subtree.
 
 Правила синхронизации:
+  * Головной (корневой) OU ALD Pro из синхронизации ИСКЛЮЧЁН — он не
+    создаётся в Яндекс 360; выгружается только его поддерево (дочерние OU).
+    Сотрудники, привязанные непосредственно к головному OU, определяются в
+    корневые подразделения Яндекс 360 (без departmentId).
   * OU ALD Pro создаются в Яндекс 360 как департаменты
     (POST /v1/directory/organizations/{org_id}/departments), иерархия
     сохраняется через parentDepartmentId. Соответствие OU <-> департамент
     хранится в локальной БД (таблица y360_sync_map) и восстанавливается по
     примечанию департамента "ald_pro_dn=<dn>".
-  * Выгружаются только пользователи, у которых в профиле ALD Pro заполнена
-    электронная почта (e-mail). Пользователи без e-mail пропускаются.
+  * Считается, что электронная почта у пользователей ALD Pro есть по
+    умолчанию: адрес берётся из атрибута mail, а если API ALD Pro его не
+    вернул — формируется из логина (login@домен из настроек).
   * Существующие сотрудники Яндекс 360 проверяются на наличие в ALD Pro
     (по логину и по e-mail):
       - если сотрудника нет в ALD Pro — он блокируется (blocked=true);
@@ -35,6 +40,7 @@ import re
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 import ald_pro
 import yandex360
@@ -62,6 +68,10 @@ DEFAULT_SETTINGS = {
 PAGE_LIMIT = 500
 # Ограничение параллельности запросов к API Яндекс 360
 API_CONCURRENCY = 4
+# Максимальная глубина обхода дерева OU ALD Pro (защита от зацикливания)
+MAX_OU_DEPTH = 25
+# Сколько дочерних OU обходится параллельно на одном уровне дерева
+OU_LEVEL_BATCH = 8
 
 
 def get_sync_settings() -> Dict[str, Any]:
@@ -137,6 +147,16 @@ def _map_set(key: str, value: str):
                 "INSERT INTO y360_sync_map (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value))
+    finally:
+        conn.close()
+
+
+def _map_delete(key: str):
+    """Удалить соответствие из кэша (например, при исключении OU из синхронизации)."""
+    conn = _db()
+    try:
+        with conn:
+            conn.execute("DELETE FROM y360_sync_map WHERE key = ?", (key,))
     finally:
         conn.close()
 
@@ -280,54 +300,107 @@ def _collect_raw_users(items: List[dict]) -> List[dict]:
     return out
 
 
-async def fetch_ald_state(root_dn: str) -> Dict[str, Any]:
+def _ou_name_from_dn(dn: str) -> str:
+    """Имя подразделения из DN (первый компонент RDN)."""
+    first = (dn or '').split(',')[0]
+    for prefix in ('OU=', 'ou=', 'CN=', 'cn='):
+        if first.startswith(prefix):
+            first = first[len(prefix):]
+            break
+    return first or (dn or '')
+
+
+async def fetch_ald_state(root_dn: str,
+                          email_domain: str = '') -> Dict[str, Any]:
     """
-    Собрать состояние ALD Pro: подразделения subtree root_dn и пользователи
-    с заполненным e-mail.
+    Собрать состояние ALD Pro: структуру подразделений subtree root_dn и
+    его пользователей.
+
+    Особенности сбора:
+      * Дерево обходится рекурсивно напрямую через API дочерних OU
+        (GET /api/ds/organizational-units/{dn}/organizational-units) для
+        КАЖДОГО узла — флаг organizationunitlistitem_is_leaf у ALD Pro
+        ненадёжен, из-за чего часть подразделений могла не попадать в
+        выборку.
+      * Головной OU (root_dn) возвращается в списке ous с parent='' —
+        сам модуль синхронизации исключает его из создания в Яндекс 360.
+      * E-mail считается наличием по умолчанию: берётся из атрибута mail,
+        а если API его не вернул — формируется как login@домен (домен из
+        настроек синхронизации либо из userPrincipalName).
 
     Возвращает ous — плоский список подразделений subtree (родители раньше
-    детей), включая сам корень; users — словарь нормализованных профилей
-    пользователей по логину (только имеющие e-mail); skipped_no_email —
-    число пропущенных пользователей без e-mail.
+    детей, включая корень); users — словарь нормализованных профилей по
+    логину; generated_emails — число пользователей, которым адрес создан
+    автоматически; fallback_emails — число адресов, взятых из UPN.
     """
+    import asyncio
+
     ous: List[dict] = []
     users: Dict[str, dict] = {}
-    skipped = 0
+    domain = (email_domain or '').strip().lstrip('@').lower()
 
     def add_ou(dn: str, name: str, parent: str):
-        if not dn or any(o['dn'] == dn for o in ous):
-            return
-        ous.append({'dn': dn, 'name': name or dn, 'parent': parent or ''})
+        dn = unquote(str(dn or ''))
+        if not dn or any(o['dn'].lower() == dn.lower() for o in ous):
+            return False
+        ous.append({'dn': dn, 'name': (name or '').strip()
+                    or _ou_name_from_dn(dn), 'parent': parent or ''})
+        return True
 
-    async def load_users(dn: str):
-        nonlocal skipped
-        ures = await ald_pro.get_organizational_unit_users(dn)
+    async def walk_children(client, parent_dn: str, depth: int = 0):
+        """Рекурсивно обойти дочерние OU родителя (subtree целиком)."""
+        if depth > MAX_OU_DEPTH:
+            logger.warning("Достигнута максимальная глубина дерева OU (%s), "
+                           "обход ниже '%s' остановлен", MAX_OU_DEPTH,
+                           parent_dn)
+            return
+        children = await ald_pro.fetch_child_units(parent_dn, client=client)
+        known = {o['dn'].lower(): o for o in ous}
+        added = []
+        for ch in children:
+            dn = unquote(str(ch.get('dn') or ''))
+            if not dn or dn.lower() in known:
+                continue
+            known[dn.lower()] = {'dn': dn}
+            add_ou(dn, ch.get('name'), parent_dn)
+            added.append(dn)
+        # обходим следующий уровень рекурсии параллельно пачками
+        for i in range(0, len(added), OU_LEVEL_BATCH):
+            batch = added[i:i + OU_LEVEL_BATCH]
+            await asyncio.gather(*(walk_children(client, dn, depth + 1)
+                                   for dn in batch))
+
+    async def load_users(client, dn: str):
+        ures = await ald_pro.get_organizational_unit_users(dn, client=client)
         for raw in _collect_raw_users(_parse_user_list(ures)):
             login = (_first(raw, 'userlistitem_login', 'login',
                             'sAMAccountName', 'samaccountname', 'uid',
-                            'userPrincipalName', 'userprincipalname',
                             default='') or '')
             login = str(login).strip()
             if not login:
                 continue
             key = login.lower()
-            email = _norm_email(_first(raw, 'userlistitem_mail', 'mail',
-                                       'email', 'userprincipalname',
-                                       'proxyAddresses', 'proxyaddresses'))
-            if key in users and users[key] is not None:
+            if key in users:
                 continue  # профиль уже собран (пользователь привязан к
                           # первой встреченной OU — как в AD)
+            upn = str(_first(raw, 'userPrincipalName', 'userprincipalname',
+                             'userlistitem_user_principal_name',
+                             default='') or '').strip()
+            email = _norm_email(_first(raw, 'userlistitem_mail', 'mail',
+                                       'email', 'proxyAddresses',
+                                       'proxyaddresses'))
+            source = 'mail'
+            if not email and '@' in upn:
+                # почта по умолчанию: берём из userPrincipalName
+                email = _norm_email(upn)
+                source = 'upn'
             if not email:
-                # выгружаются только пользователи с заполненной электронной
-                # почтой в профиле ALD Pro; запоминаем, что пользователь
-                # встречался без e-mail (для статистики пропусков)
-                users.setdefault(key, None)
-                continue
-            if users.get(key) is not None:
-                # повторная встреча пользователя с e-mail — пропускаем
-                continue
-            first_name = str(_first(raw, 'userlistitem_first_name', 'givenName',
-                                    'givenname', default='') or '')
+                # почты в профиле нет — считаем, что она есть по умолчанию,
+                # и формируем адрес из логина
+                email = f"{key}@{domain}" if domain else f"{key}@mail.local"
+                source = 'generated'
+            first_name = str(_first(raw, 'userlistitem_first_name',
+                                    'givenName', 'givenname', default='') or '')
             last_name = str(_first(raw, 'userlistitem_last_name', 'sn',
                                    default='') or '')
             cn = str(_first(raw, 'userlistitem_common_name', 'cn',
@@ -337,6 +410,7 @@ async def fetch_ald_state(root_dn: str) -> Dict[str, Any]:
             users[key] = {
                 'login': login,
                 'email': email,
+                'email_source': source,
                 'firstName': first_name,
                 'lastName': last_name,
                 'displayName': cn,
@@ -345,39 +419,39 @@ async def fetch_ald_state(root_dn: str) -> Dict[str, Any]:
                 'phone': str(_first(raw, 'userlistitem_telephone',
                                     'telephoneNumber', 'telephonenumber',
                                     default='') or ''),
-                'ou_dn': dn,
+                'ou_dn': unquote(dn),
             }
 
-    # 1. Подразделения subtree (дерево OU от корня, родители раньше детей)
-    res = await ald_pro.get_organizational_units(root_dn=root_dn)
-    if not isinstance(res, dict) or not res.get('success'):
-        raise RuntimeError("Не удалось получить OU '%s' из ALD Pro: %s"
-                           % (root_dn, (res or {}).get('detail')
-                              if isinstance(res, dict) else 'нет ответа'))
-    data = res.get('data') or []
-    root_items = data if isinstance(data, list) else []
-    flat = _flatten_ou_tree(root_items)
-    for node in flat:
-        add_ou(node['dn'], node['name'], node['parent'])
-    if not any(o['dn'].lower() == root_dn.lower() for o in ous):
-        # вариант ответа без обёртки children — добавляем только корень
-        add_ou(root_dn,
-               root_dn.split(',')[0].replace('OU=', '').replace('ou=', ''),
-               '')
+    root_dn_decoded = unquote(root_dn)
+    # 1. Структура подразделений: обход subtree напрямую по API детей,
+    #    чтобы не терять узлы с некорректным is_leaf.
+    add_ou(root_dn_decoded, _ou_name_from_dn(root_dn_decoded), '')
+    client = await ald_pro.get_shared_client()
+    if client is None:
+        raise RuntimeError("ALD Pro не настроен или недоступен")
+    try:
+        await walk_children(client, root_dn_decoded)
 
-    # 2. Пользователи всех подразделений subtree
-    for ou in list(ous):
-        try:
-            await load_users(ou['dn'])
-        except Exception as e:
-            logger.warning("Не удалось получить пользователей OU '%s': %s",
-                           ou['dn'], e)
+        # 2. Пользователи всех подразделений subtree (включая головной OU —
+        #    они попадут в корневые подразделения Яндекс 360)
+        for ou in list(ous):
+            try:
+                await load_users(client, ou['dn'])
+            except Exception as e:
+                logger.warning("Не удалось получить пользователей OU '%s': %s",
+                               ou['dn'], e)
+    finally:
+        await ald_pro.close_shared_client()
 
-    no_email_count = sum(1 for v in users.values() if v is None)
-    users = {k: v for k, v in users.items() if v}
-    # удаляем временные метки: пользователи без e-mail не выгружаются
+    generated = sum(1 for u in users.values()
+                    if u['email_source'] == 'generated')
+    from_upn = sum(1 for u in users.values() if u['email_source'] == 'upn')
+    logger.info("ALD Pro subtree '%s': подразделений=%s, пользователей=%s "
+                "(почта из mail=%s, из UPN=%s, создана по умолчанию=%s)",
+                root_dn_decoded, len(ous), len(users),
+                len(users) - generated - from_upn, from_upn, generated)
     return {'ous': ous, 'users': users,
-            'skipped_no_email': no_email_count + skipped}
+            'generated_emails': generated, 'fallback_emails': from_upn}
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +522,15 @@ def _dept_note(department: dict) -> str:
 
 async def sync_departments(ous: List[dict], y360_state: dict,
                            client, org_id: str, report: dict,
-                           settings_parent_dept: str = ''):
-    """Создать/сопоставить департаменты Яндекс 360 для OU ALD Pro."""
+                           settings_parent_dept: str = '',
+                           root_dn: str = ''):
+    """Создать/сопоставить департаменты Яндекс 360 для OU ALD Pro.
+
+    Головной (корневой) OU ALD Pro `root_dn` из синхронизации исключается:
+    подразделение с таким именем в Яндекс 360 не создаётся — его дочерние OU
+    становятся корневыми департаментами (при наличии parent_department_id из
+    настроек вешаются на него).
+    """
     deps = y360_state['departments']
     by_note_dn = {}
     for d in deps:
@@ -459,10 +540,20 @@ async def sync_departments(ous: List[dict], y360_state: dict,
 
     sem = asyncio.Semaphore(API_CONCURRENCY)
     dep_url = f'/v1/directory/organizations/{org_id}/departments'
+    root_dn_lower = (root_dn or '').strip().lower()
 
     for ou in ous:  # список отсортирован: родители идут раньше детей
         dn = ou['dn']
         map_key = 'dep:' + dn
+        if root_dn_lower and dn.lower() == root_dn_lower:
+            # головной подразделение ALD Pro НЕ создаётся в Яндекс 360;
+            # сбрасываем прежнее соответствие, если оно было сохранено
+            _map_delete(map_key)
+            report['departments']['skipped_root'] = \
+                report['departments'].get('skipped_root', 0) + 1
+            logger.info("Головной OU '%s' исключён из синхронизации "
+                        "(не создаётся в Яндекс 360)", dn)
+            continue
         dept_id = _map_get(map_key)
         if dept_id and not any(d['id'] == dept_id for d in deps):
             dept_id = None  # департамент был удалён вручную — пересоздаём
@@ -473,9 +564,13 @@ async def sync_departments(ous: List[dict], y360_state: dict,
             report['departments']['matched'] += 1
             continue
         parent_id = _map_get('dep:' + ou['parent']) if ou['parent'] else None
-        if not ou['parent']:
-            # корневой OU subtree — вешаем на указанный в настройках
-            # родительский департамент Яндекс 360 (если задан)
+        if ou['parent'] and parent_id is None:
+            # родитель — головной OU (исключён из синхронизации) или его
+            # департамент ещё не сопоставлен: такой департамент становится
+            # корневым (вешается на parent_department_id из настроек)
+            parent_id = str(settings_parent_dept or '').strip() or None
+        elif not ou['parent']:
+            # непосредственные дети головного OU — корневые департаменты
             parent_id = str(settings_parent_dept or '').strip() or None
         payload = {'name': ou['name'][:150] or dn,
                    'note': 'ald_pro_dn=%s' % dn}
@@ -508,6 +603,8 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
     тех, кого больше нет в ALD Pro.
     """
     employees = y360_state['employees']
+    departments = y360_state['departments']
+    known_dept_ids = {d['id'] for d in departments}
     emp_by_login = {e['login'].lower(): e for e in employees if e['login']}
     emp_by_email = {}
     for e in employees:
@@ -520,7 +617,15 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
     users_url = f'/v1/directory/organizations/{org_id}/users'
 
     def dept_for_ou(dn: str) -> Optional[str]:
-        return _map_get('dep:' + dn) if dn else None
+        """Департамент Яндекс 360 для OU ALD Pro.
+
+        Для головного OU (и для неизвестных OU) возвращается '' — пустая
+        строка означает «в корневом подразделении» (departmentId не задаётся).
+        None — соответствие ещё не создано, пользователя обрабатывать рано.
+        """
+        if not dn:
+            return ''
+        return _map_get('dep:' + dn)
 
     async def patch_employee(login: str, payload: dict) -> Optional[str]:
         async with sem:
@@ -537,7 +642,7 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
         login = u['login']
         processed_logins.add(login.lower())
         target_dept = dept_for_ou(u['ou_dn'])
-        if not target_dept:
+        if target_dept is None:
             report['errors'].append(
                 "Подразделение '%s' не сопоставлено с Яндекс 360 — "
                 "пользователь %s пропущен" % (u['ou_dn'], login))
@@ -558,10 +663,11 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
                 'email': email,
                 'login': login,
                 'password': 'AldPr$ync%d' % (int(time.time()) % 100000),
-                'departmentId': int(target_dept),
                 'note': 'ald_pro_uid=%s' % login,
                 'sendEmail': False,
             }
+            if target_dept:
+                payload['departmentId'] = int(target_dept)
             if u['displayName'] and u['displayName'] != login:
                 payload['commonName'] = u['displayName']
             async with sem:
@@ -585,12 +691,18 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
             report['users']['created'] += 1
             continue
 
-        # Сотрудник существует — сверяем подразделение и актуальность
+        # Сотрудник существует — сверяем принадлежность к подразделению и
+        # актуальность учётки (наличие в ALD Pro проверяется ниже)
         changes_needed = []
-        if emp['department'] and emp['department'] != target_dept:
-            changes_needed.append(('departmentId', int(target_dept)))
-        elif not emp['department']:
-            changes_needed.append(('departmentId', int(target_dept)))
+        if emp['department'] != target_dept:
+            if target_dept:
+                changes_needed.append(('departmentId', int(target_dept)))
+            elif emp['department'] and emp['department'] in known_dept_ids:
+                # пользователь перенесён в головной OU ALD Pro (вне
+                # синхронизируемого дерева подразделений) — снимаем с
+                # должности в Яндекс 360
+                changes_needed.append('unassignDepartment')
+                changes_needed.append(('departmentId', 0))
         if emp['blocked']:
             changes_needed.append(('blocked', False))
             changes_needed.append(('unblockReason', 'restored'))
@@ -598,13 +710,18 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
         if changes_needed:
             payload = {k: v for k, v in changes_needed}
             err = await patch_employee(emp['login'] or login, payload)
+            if err and 'unassignDepartment' in payload:
+                # некоторые версии API не принимают вымышленный ключ —
+                # пробуем снять с должности только departmentId=0
+                payload.pop('unassignDepartment', None)
+                err = await patch_employee(emp['login'] or login, payload)
             if err:
                 report['errors'].append(
                     "Не удалось обновить пользователя %s в Яндекс 360 (%s)"
                     % (login, err))
                 continue
             moved = ('departmentId' in payload and emp['department']
-                     and emp['department'] != target_dept)
+                     != target_dept)
             if moved:
                 report['users']['moved'] += 1
             else:
@@ -660,9 +777,10 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
     Выполнить полную синхронизацию ALD Pro -> Яндекс 360.
 
     1. Читает настройки (корневой OU, интервал, домен почты).
-    2. Собирает дерево OU и пользователей с e-mail из ALD Pro.
+    2. Собирает дерево OU и пользователей из ALD Pro (головной OU
+       исключается из создания в Яндекс 360).
     3. Синхронизирует подразделения, затем пользователей.
-    4. Блокирует сотрудников Яндекс 360, удалённых из ALD Pro.
+    4. Блокирует сотрудники Яндекс 360, удалённые из ALD Pro.
     """
     started = time.time()
     settings = get_sync_settings()
@@ -672,9 +790,10 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
         'root_ou': root_dn,
         'ald_ous': 0,
-        'ald_users_with_email': 0,
-        'ald_users_skipped_no_email': 0,
-        'departments': {'created': 0, 'matched': 0},
+        'ald_users': 0,
+        'ald_users_email_generated': 0,
+        'ald_users_email_from_upn': 0,
+        'departments': {'created': 0, 'matched': 0, 'skipped_root': 0},
         'users': {'created': 0, 'moved': 0, 'updated': 0, 'blocked': 0,
                   'unchanged': 0, 'skipped': 0},
         'errors': [],
@@ -701,11 +820,14 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         return result
 
     try:
-        # 1. Данные ALD Pro
-        state = await fetch_ald_state(root_dn)
+        # 1. Данные ALD Pro (поддерево головного OU; сам головной OU
+        #    синхронизатором не создаётся)
+        state = await fetch_ald_state(root_dn,
+                                      email_domain=settings.get('email_domain', ''))
         report['ald_ous'] = len(state['ous'])
-        report['ald_users_with_email'] = len(state['users'])
-        report['ald_users_skipped_no_email'] = state['skipped_no_email']
+        report['ald_users'] = len(state['users'])
+        report['ald_users_email_generated'] = state['generated_emails']
+        report['ald_users_email_from_upn'] = state['fallback_emails']
 
         # 2. Текущее состояние Яндекс 360
         y360_state = await fetch_y360_state()
@@ -717,7 +839,8 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         async with yandex360.make_async_client(base_url=base, headers=headers) as client:
             await sync_departments(state['ous'], y360_state, client, org_id,
                                    report,
-                                   settings.get('parent_department_id', ''))
+                                   settings.get('parent_department_id', ''),
+                                   root_dn=root_dn)
             await sync_users(state['users'], y360_state, client, org_id,
                              settings, report)
 
@@ -739,7 +862,7 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         logger.info("Синхронизация Яндекс 360 завершена (%s): OU=%d, "
                     "пользователей=%d, создано=%d, перенесено=%d, "
                     "заблокировано=%d, ошибок=%d", trigger,
-                    report['ald_ous'], report['ald_users_with_email'],
+                    report['ald_ous'], report['ald_users'],
                     report['departments']['created'],
                     report['users']['created'], report['users']['moved'],
                     report['users']['blocked'], len(report['errors']))
@@ -755,8 +878,8 @@ async def build_preview() -> Dict[str, Any]:
     """
     Собрать отчёт о планируемых изменениях БЕЗ записи в Яндекс 360.
 
-    Показывает: подразделения ALD Pro, которые будут созданы; пользователей,
-    которые будут созданы (только имеющие e-mail); переносы между
+    Показывает: подразделения ALD Pro, которые будут созданы (головной OU
+    исключается); пользователей, которые будут созданы; переносы между
     подразделениями; сотрудников Яндекс 360, отсутствующих в ALD Pro
     (кандидатов на блокировку).
     """
@@ -770,8 +893,11 @@ async def build_preview() -> Dict[str, Any]:
     if not org_id or not token:
         raise RuntimeError('Яндекс 360 не настроен (org_id / OAuth-токен)')
 
-    state = await fetch_ald_state(root_dn)
+    state = await fetch_ald_state(root_dn,
+                                  email_domain=settings.get('email_domain', ''))
     y360_state = await fetch_y360_state()
+
+    root_dn_lower = root_dn.lower()
 
     # Соответствия департаментов (по кэшу или примечанию ald_pro_dn=)
     dept_by_note = {}
@@ -781,11 +907,14 @@ async def build_preview() -> Dict[str, Any]:
             dept_by_note[m.group(1).lower()] = d['id']
 
     def dept_for_ou(dn: str) -> Optional[str]:
+        if dn and dn.lower() == root_dn_lower:
+            return ''  # головной OU не создаётся — пользователи вне департамента
         return _map_get('dep:' + dn) or dept_by_note.get((dn or '').lower())
 
     new_departments = [
         {'dn': ou['dn'], 'name': ou['name'], 'parent': ou['parent']}
-        for ou in state['ous'] if not dept_for_ou(ou['dn'])
+        for ou in state['ous']
+        if ou['dn'].lower() != root_dn_lower and not dept_for_ou(ou['dn'])
     ]
 
     emp_by_login = {e['login'].lower(): e for e in y360_state['employees'] if e['login']}
@@ -808,10 +937,10 @@ async def build_preview() -> Dict[str, Any]:
                 'displayName': u['displayName'], 'ou_dn': u['ou_dn'],
                 'department': target_dept or '(будет создан)',
             })
-        elif target_dept and emp['department'] and emp['department'] != target_dept:
+        elif target_dept and emp['department'] != target_dept:
             users_to_move.append({
                 'login': emp['login'], 'email': emp['email'] or u['email'],
-                'from_department': emp['department'],
+                'from_department': emp['department'] or '-',
                 'to_department': target_dept, 'ou_dn': u['ou_dn'],
             })
 
@@ -830,9 +959,13 @@ async def build_preview() -> Dict[str, Any]:
 
     return {
         'root_ou': root_dn,
-        'ald_departments_total': len(state['ous']),
+        'ald_departments_total': len(new_departments),
+        'ald_departments_tree': len(state['ous']),
+        'ald_users': len(state['users']),
         'ald_users_with_email': len(state['users']),
-        'ald_users_skipped_no_email': state['skipped_no_email'],
+        'ald_users_skipped_no_email': 0,
+        'ald_users_email_generated': state['generated_emails'],
+        'ald_users_email_from_upn': state['fallback_emails'],
         'y360_departments_total': len(y360_state['departments']),
         'y360_users_total': len(y360_state['employees']),
         'new_departments': new_departments[:200],
