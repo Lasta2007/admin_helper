@@ -73,7 +73,8 @@ SETTINGS_KEY = 'y360_api_settings'
 DEFAULT_SETTINGS = {
     'api_host': 'cloud-api.yandex.net',  # хост API (cloud-api.yandex.net / api360.yandex.net)
     'org_id': '',                        # идентификатор организации (org_id)
-    'oauth_token': '',                   # OAuth-токен приложения Яндекс ID
+    'oauth_token': '',                   # OAuth-токен приложения Яндекс ID (чтение каталога)
+    'oauth_token_write': '',             # токен для операций записи (создание подразделений/сотрудников); если пусто — используется oauth_token
     'client_id': '',                     # ClientID OAuth-приложения (для справки/получения токена)
 }
 
@@ -121,12 +122,14 @@ def get_settings() -> Dict[str, Any]:
         'api_host': _y360_settings.get('api_host', ''),
         'org_id': _y360_settings.get('org_id', ''),
         'oauth_token': _y360_settings.get('oauth_token', ''),
+        'oauth_token_write': _y360_settings.get('oauth_token_write', ''),
         'client_id': _y360_settings.get('client_id', ''),
     }
 
 
 def save_settings(api_host: str, org_id: str, oauth_token: str,
-                  client_id: str = '') -> bool:
+                  client_id: str = '',
+                  oauth_token_write: Optional[str] = None) -> bool:
     """Сохранить настройки авторизации Яндекс 360 (в БД, таблицу module_settings)."""
     global _y360_settings
     if api_host not in API_HOSTS:
@@ -135,6 +138,8 @@ def save_settings(api_host: str, org_id: str, oauth_token: str,
     _y360_settings['org_id'] = str(org_id).strip()
     _y360_settings['oauth_token'] = oauth_token.strip()
     _y360_settings['client_id'] = client_id.strip()
+    if oauth_token_write is not None:
+        _y360_settings['oauth_token_write'] = oauth_token_write.strip()
     try:
         from database import set_module_settings
         set_module_settings(SETTINGS_KEY, dict(_y360_settings))
@@ -291,15 +296,34 @@ async def get_departments(limit: int = 100, offset: int = 0) -> Dict[str, Any]:
         return {'success': False, 'detail': f'Ошибка: {e}'}
 
 
+def get_write_token() -> Optional[str]:
+    """Вернуть отдельный токен для операций ЗАПИСИ (создание/изменение
+    подразделений и сотрудников), если он задан; иначе — основной токен.
+
+    Примечание: на cloud-api.yandex.net методы создания (POST /departments,
+    POST /users) доступны только при использовании токена, выданного
+    корпоративному приложению Яндекс 360 с правом directory:write_*.
+    Обычный OAuth-токен «личного» приложения часто дает 405.
+    """
+    token = (_y360_settings.get('oauth_token_write') or '').strip()
+    if token:
+        return token
+    return (_y360_settings.get('oauth_token') or '').strip() or None
+
+
 async def create_department(client: 'httpx.AsyncClient', org_id: str,
                             name: str, parent_department_id=None,
-                            note: str = '') -> Dict[str, Any]:
+                            note: str = '',
+                            token: Optional[str] = None) -> Dict[str, Any]:
     """Создать подразделение (DepartmentService_Create).
 
     POST /v1/directory/organizations/{org_id}/departments?org_id={org_id}
     Тело: {"name": str, "parentDepartmentId": int|null, "note": str}.
     Возвращает dict c 'success' и 'id' созданного подразделения.
     Требуется право OAuth directory:write_departments.
+
+    token — токен для запроса записи (get_write_token()); если он отличается
+    от токена клиента, заголовок Authorization переопределяется локально.
     """
     payload: Dict[str, Any] = {'name': (name or '').strip()[:150]}
     if parent_department_id not in (None, '', 0, '0'):
@@ -312,7 +336,11 @@ async def create_department(client: 'httpx.AsyncClient', org_id: str,
     if note:
         payload['note'] = note[:200]
     url = f"/v1/directory/organizations/{org_id}/departments"
-    resp = await client.post(url, params={'org_id': org_id}, json=payload)
+    headers = {}
+    if token:
+        headers['Authorization'] = f'OAuth {token}'
+    resp = await client.post(url, params={'org_id': org_id}, json=payload,
+                             headers=headers or None)
     if resp.status_code not in (200, 201):
         return {'success': False,
                 'status': resp.status_code,
