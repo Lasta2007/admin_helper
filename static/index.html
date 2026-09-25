@@ -155,8 +155,12 @@
     </div>
     <div style="padding: 15px;">
       <h3>Настройки выгрузки</h3>
-      <label>Корневой OU ALD Pro (DN), начиная с которого выгружается структура</label>
-      <input id="y360SyncRootOuInput" type="text" placeholder="OU=Company,DC=corp,DC=local">
+      <label>Базовый OU ALD Pro (DN), от которого строится дерево и выгружается структура</label>
+      <div style="display:flex; gap:8px;">
+        <input id="y360SyncRootOuInput" type="text" placeholder="OU=Company,DC=corp,DC=local" style="flex: 1;">
+        <button id="y360AldTreeBtn">Построить дерево ALD Pro</button>
+      </div>
+      <small style="color:#888;">Дерево строится по API ALD Pro (subtree базового OU + пользователи каждого OU). Рядом с каждым узлом указываются id (порядковый номер в дереве) и childID (id родителя; для корневого OU childID = 0).</small>
       <label>ID родительского департамента Яндекс 360 для корневого OU (необязательно)</label>
       <input id="y360SyncParentDeptInput" type="text" placeholder="например, 1000001">
       <label>Домен корпоративной почты Яндекс 360 (для новых учетных записей)</label>
@@ -168,6 +172,15 @@
         Блокировать в Яндекс 360 сотрудников, отсутствующих в ALD Pro
       </label>
       <button id="y360SyncSaveBtn">Сохранить настройки синхронизации</button>
+
+      <h3>Дерево подразделений и пользователей ALD Pro</h3>
+      <div class="toolbar" style="margin-bottom:6px;">
+        <button id="y360AldTreeViewModeText" class="y360-ald-view-active">Текстовое представление</button>
+        <button id="y360AldTreeViewModeNested">Дерево (HTML)</button>
+      </div>
+      <div id="y360AldTreeStatus" style="color:#666; margin-bottom:6px;"></div>
+      <pre id="y360AldTreeText" class="y360-tree-box">Нажмите «Построить дерево ALD Pro» — здесь появится структура подразделений от базового OU с пользователями.</pre>
+      <div id="y360AldTreeHtml" class="hidden"></div>
 
       <h3>Статус синхронизации</h3>
       <div id="y360SyncStatus" style="background:#f6f8fa; border:1px solid #ddd; padding:10px; border-radius:6px; white-space:pre-wrap;">Загрузка...</div>

@@ -1290,3 +1290,35 @@ async def api_y360_tree_get():
 def api_y360_tree_status():
     """Статус последней операции построения дерева Яндекс 360."""
     return sync360_new.get_last_status()
+
+
+@router.get("/yandex360/aldpro/tree")
+async def api_aldpro_tree_get(base_ou: str = Query(None, description=(
+        "Базовый OU ALD Pro (DN). Если не указан — используется сохранённая "
+        "настройка «Корневой OU»."))):
+    """Получить дерево подразделений ALD Pro от базового OU и пользователей в них.
+
+    Строит subtree по API ALD Pro
+    (/api/ds/organizational-units/{dn}/organizational-units и .../users-list),
+    каждому узлу назначаются id (порядковый номер в дереве) и childID
+    (id родителя; для корневого OU childID = 0).
+
+    Возвращает:
+      * json — машиночитаемое дерево (id, childID, dn, users, children);
+      * text — ASCII-представление «Название (id=N, childID=M) [сотрудников: K]»;
+      * stats — сводка (подразделений, пользователей и т.д.).
+    """
+    try:
+        result = await sync360_new.get_ald_pro_tree((base_ou or '').strip() or None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result.get('success'):
+        raise HTTPException(status_code=400,
+                            detail=result.get('error') or 'Ошибка получения дерева ALD Pro')
+    return result
+
+
+@router.get("/yandex360/aldpro/tree/status")
+def api_aldpro_tree_status():
+    """Статус последней операции построения дерева ALD Pro."""
+    return sync360_new.get_ald_pro_last_status()
