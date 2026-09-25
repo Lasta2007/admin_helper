@@ -828,7 +828,8 @@ document.addEventListener('DOMContentLoaded', function() {
 // Настройки авторизации в API Яндекс 360
 // ============================================================================
 let y360Settings = {
-  api_host: 'cloud-api.yandex.net',
+  api_host: 'api360.yandex.net',
+  api_host_alt: 'cloud-api.yandex.net',
   org_id: '',
   oauth_token: '',
   client_id: ''
@@ -841,7 +842,7 @@ async function loadYandex360Settings() {
     if (res.ok) {
       const data = await res.json();
       y360Settings = data;
-      document.getElementById('y360HostSelect').value = data.api_host || 'cloud-api.yandex.net';
+      document.getElementById('y360HostSelect').value = data.api_host || 'api360.yandex.net';
       document.getElementById('y360OrgIdInput').value = data.org_id || '';
       document.getElementById('y360ClientIdInput').value = data.client_id || '';
       document.getElementById('y360TokenInput').value = data.oauth_token || '';

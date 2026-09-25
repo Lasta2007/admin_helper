@@ -6,18 +6,20 @@
 ВАЖНО: у API Яндекс 360 ДВА ХОСТА С РАЗНЫМИ НАБОРАМИ МЕТОДОВ
 (см. https://yandex.ru/dev/api360/doc/ru/concepts/about):
 - https://api360.yandex.net  — основной хост Directory API для организаций.
-  Только здесь поддерживается создание подразделений:
+  Здесь поддерживаются ВСЕ методы каталога, включая создание подразделений:
       POST https://api360.yandex.net/directory/v1/org/{orgId}/departments
-  (DepartmentService_Create). На других хостах этот метод возвращает
-  HTTP 405 Method Not Allowed.
+  (DepartmentService_Create).
 - https://cloud-api.yandex.net — общий облачный хост Yandex Cloud API.
-  Часть методов каталога доступна здесь, но НЕ методы создания
-  подразделений. Используется как дополнительный (fallback) хост.
+  Пути /directory/... здесь НЕ обслуживаются: в отличие от 405 это именно
+  HTTP 404 NotFoundError (проверено на практике), поэтому хост не является
+  «зеркалом» api360.yandex.net и повтор запроса на нём при 404 бесполезен.
 
-Поэтому все операции СОЗДАНИЯ ПОДРАЗДЕЛЕНИЙ всегда выполняются ТОЛЬКО
-через api360.yandex.net, независимо от выбранного в настройках хоста.
-Для остальных операций используется хост из настроек, а при 404/405 с
-автоматическим повтором на другом хосте (см. request()).
+Поэтому все запросы к Directory API (чтение списков пользователей и
+подразделений, создание/изменение — пути /directory/v1/org/{orgId}/...)
+всегда выполняются через api360.yandex.net, независимо от хоста, выбранного
+в настройках. Выбор хоста по пути запроса сосредоточен в центральном
+helper-е resolve_base_url(), который использует request() (см. также
+fallback=True — явный повтор на другом хосте, по умолчанию выключен).
 
 Формат путей Directory API (согласно актуальной документации):
 - GET    /directory/v1/org/{orgId}/users          — список сотрудников
@@ -57,28 +59,34 @@ import httpx
 
 logger = logging.getLogger('admin_helper')
 
-# Хосты API Яндекс 360 (раздел "Доступ к API").
-# У каждого хоста свой набор поддерживаемых методов:
-# - api360.yandex.net  — основной хост Directory API; ТОЛЬКО здесь доступен
-#   DepartmentService_Create (POST /directory/v1/org/{orgId}/departments);
-# - cloud-api.yandex.net — дополнительный облачный хост (часть методов).
+# Хосты API Яндекс 360 (раздел "Доступ к API" документации
+# https://yandex.ru/dev/api360/doc/ru/).
+# ВАЖНО: api360.yandex.net и cloud-api.yandex.net — ЭТО РАЗНЫЕ API ШЛЮЗЫ
+# С РАЗНЫМИ НАБОРАМИ МЕТОДОВ, а не зеркала друг друга. Практически
+# подтверждено: запросы Directory API (UserService_List,
+# DepartmentService_List, DepartmentService_Create и т.д.) обрабатывает
+# ТОЛЬКО https://api360.yandex.net; на cloud-api.yandex.net эти пути
+# возвращают HTTP 404 NotFoundError ({"error":"NotFoundError"}), поэтому
+# повтор запроса на другом хосте при 404 БЕСПОЛЕЗЕН и только маскирует
+# настоящую причину ошибки.
 API_HOSTS = {
     'api360.yandex.net': 'https://api360.yandex.net',        # основной хост API 360
     'cloud-api.yandex.net': 'https://cloud-api.yandex.net',  # дополнительный хост
 }
 
-# Основной хост Directory API Яндекс 360. Создание подразделений
-# (DepartmentService_Create) поддерживается ТОЛЬКО на нём.
+# Основной хост Directory API Яндекс 360. Все методы Directory API
+# (чтение и запись, включая DepartmentService_Create) поддерживаются на нём.
 PRIMARY_API_HOST = 'api360.yandex.net'
 PRIMARY_BASE_URL = API_HOSTS[PRIMARY_API_HOST]
 
-# Методы, доступные только на основном хосте (api360.yandex.net):
-# (HTTP-метод, путь должен начинаться с /directory/v1/org/{orgId}/departments)
-WRITE_ONLY_ON_PRIMARY = ('POST',)
+# Запросы к путям Directory API (/directory/...) всегда выполняются на
+# основном хосте api360.yandex.net — независимо от того, какой хост выбран
+# в настройках (значение api_host может устареть/быть выставлен ошибочно).
+DIRECTORY_PATH_PREFIX = '/directory/'
 
 
 def other_host(host: str) -> str:
-    """Вернуть «другой» хост API (для повторных попыток при 404/405)."""
+    """Вернуть «другой» хост API (для диагностических сообщений)."""
     return ('cloud-api.yandex.net' if host == PRIMARY_API_HOST
             else PRIMARY_API_HOST)
 
@@ -180,31 +188,53 @@ def org_path(org_id: str, suffix: str = '') -> str:
     return f"/directory/v1/org/{org_id}{('/' + suffix.lstrip('/')) if suffix else ''}"
 
 
+def resolve_base_url(path: str, method: str = 'GET',
+                     base_url: str = None) -> str:
+    """Выбрать базовый URL для запроса с учетом двух разных хостов API 360.
+
+    Правила:
+      - пути Directory API ('/directory/...') ВСЕГДА обслуживаются основным
+        хостом https://api360.yandex.net (UserService_*, DepartmentService_*;
+        включая POST /directory/v1/org/{orgId}/departments). На
+        cloud-api.yandex.net эти пути возвращают 404 NotFoundError — поэтому
+        даже явно переданный base_url перезаписывается для /directory/...;
+      - прочие пути (например, OAuth-сервисы) идут на base_url или хост из
+        настроек.
+    """
+    p = (path or '')
+    if not p.startswith('/'):
+        p = '/' + p
+    if p.startswith(DIRECTORY_PATH_PREFIX):
+        return PRIMARY_BASE_URL
+    return base_url or _base_url()
+
+
 async def request(method: str, path: str, *, base_url: str = None,
-                  fallback: bool = True, **kwargs) -> httpx.Response:
+                  fallback: bool = False, **kwargs) -> httpx.Response:
     """Выполнить асинхронный запрос к API Яндекс 360 с учетом двух хостов.
 
-    У хостов api360.yandex.net и cloud-api.yandex.net разные наборы
-    поддерживаемых методов, поэтому:
-      - создающие запросы (method == 'POST') всегда идут на основной хост
-        api360.yandex.net (только там доступен DepartmentService_Create);
-      - остальные запросы идут на хост из настроек; если метод/путь там
-        недоступны (HTTP 404/405) и задан дополнительный хост — запрос
-        автоматически повторяется на нём (fallback=True).
+    У хостов api360.yandex.net и cloud-api.yandex.net РАЗНЫЕ наборы
+    поддерживаемых методов (это не зеркала), поэтому выбор хоста выполняет
+    resolve_base_url(): все запросы Directory API (/directory/...) уходят на
+    api360.yandex.net — там доступны и чтение (UserService_List,
+    DepartmentService_List), и запись (DepartmentService_Create,
+    UserService_Create, ...).
+
+    Автоматический повтор на другом хосте при 404 по умолчанию ОТКЛЮЧЕН
+    (fallback=False): 404 от cloud-api.yandex.net означает «этот шлюз не
+    обслуживает Directory API», а не «метод временно недоступен», и ретрай
+    лишь дублирует запрос и маскирует настоящую причину ошибки. При
+    необходимости можно включить явным fallback=True.
 
     Возвращает httpx.Response. Вызывать внутри уже запущенного event loop.
     """
     method = method.upper()
-    explicit_base = base_url
-    if method in WRITE_ONLY_ON_PRIMARY:
-        # создание подразделений/сотрудников — только на api360.yandex.net
-        first = PRIMARY_BASE_URL
-        retry = None
-    else:
-        first = explicit_base or _base_url()
-        retry = alt_base_url() if (fallback and explicit_base is None) else None
-        if retry == first:
-            retry = None
+    first = resolve_base_url(path, method, base_url)
+    retry = None
+    if fallback and base_url is None:
+        other = API_HOSTS.get(other_host(_host_of(first)))
+        if other and other != first:
+            retry = other
 
     resp = await make_async_client(base_url=first).request(method, path, **kwargs)
     if retry and resp.status_code in (404, 405):
@@ -214,6 +244,14 @@ async def request(method: str, path: str, *, base_url: str = None,
         resp = await make_async_client(base_url=retry).request(
             method, path, **kwargs)
     return resp
+
+
+def _host_of(url: str) -> str:
+    """Вернуть имя хоста по базовому URL ('api360.yandex.net' и т.п.)."""
+    for host, base in API_HOSTS.items():
+        if url == base:
+            return host
+    return (url or '').removeprefix('https://').removeprefix('http://').rstrip('/')
 
 
 def make_async_client(base_url: str = None, headers: Dict[str, Any] = None) -> httpx.AsyncClient:
@@ -316,15 +354,15 @@ async def test_connection(api_host: str, org_id: str, oauth_token: str) -> Dict[
 
     Выполняет пробный запрос списка подразделений (GET
     /directory/v1/org/{orgId}/departments?limit=1) с заголовком
-    ``Authorization: OAuth <токен>`` на выбранном хосте; при HTTP 404/405
-    автоматически повторяет запрос на другом хосте (у хостов разные наборы
-    методов).
+    ``Authorization: OAuth <токен>``. Пути Directory API всегда проверяются
+    на основном хосте https://api360.yandex.net — именно там поддерживаются
+    DepartmentService_List и DepartmentService_Create; на
+    cloud-api.yandex.net эти пути возвращают 404 NotFoundError.
 
     Returns:
         Dict {'success': bool, ...}
     """
     host = normalize_host(api_host) or DEFAULT_SETTINGS['api_host']
-    base_url = API_HOSTS[host]
     org_id = str(org_id).strip()
     oauth_token = oauth_token.strip()
 
@@ -332,6 +370,10 @@ async def test_connection(api_host: str, org_id: str, oauth_token: str) -> Dict[
         return {'success': False, 'detail': 'Укажите числовой идентификатор организации (org_id)'}
     if not oauth_token:
         return {'success': False, 'detail': 'Укажите OAuth-токен'}
+
+    # выбор хоста по пути: /directory/... обслуживает только api360.yandex.net
+    base_url = resolve_base_url(org_path(org_id, 'departments'),
+                                base_url=API_HOSTS[host])
 
     path = org_path(org_id, 'departments')
     headers = {
@@ -346,16 +388,16 @@ async def test_connection(api_host: str, org_id: str, oauth_token: str) -> Dict[
 
     try:
         response = await _try(base_url)
-        used_host = host
-        # у api360.yandex.net и cloud-api.yandex.net разные наборы методов —
-        # при недоступности пути/метода пробуем второй хост
-        if response.status_code in (404, 405):
-            alt = other_host(host)
-            logger.warning(
-                "GET %s%s вернул HTTP %s на %s — повторяю на %s",
-                base_url, path, response.status_code, host, alt)
-            response = await _try(API_HOSTS[alt])
-            used_host = alt
+        used_host = _host_of(base_url)
+        # Directory API работает только на api360.yandex.net; если в настройках
+        # был выбран cloud-api.yandex.net, запрос уже перенаправлен на верный
+        # хост (см. resolve_base_url). Повтор на другом хосте при 404 не
+        # выполняется — он маскирует настоящую причину ошибки.
+        if base_url == PRIMARY_BASE_URL and host != PRIMARY_API_HOST:
+            logger.info(
+                "Проверка подключения: путь %s обслуживает только %s — "
+                "использую его вместо выбранного %s",
+                path, PRIMARY_API_HOST, host)
 
         if response.status_code == 200:
             data = response.json()
@@ -364,7 +406,7 @@ async def test_connection(api_host: str, org_id: str, oauth_token: str) -> Dict[
             return {
                 'success': True,
                 'host_used': used_host,
-                'detail': f'Подключение успешно ({API_HOSTS[used_host]}). '
+                'detail': f'Подключение успешно ({API_HOSTS.get(used_host, used_host)}). '
                           f'Подразделений в организации: {total}',
                 'total_departments': total,
             }
@@ -519,7 +561,8 @@ async def create_employee(org_id: str, payload: Dict[str, Any],
     """Создать сотрудника (UserService_Create).
 
     POST /directory/v1/org/{orgId}/users — выполняется через request(),
-    который для POST всегда использует основной хост api360.yandex.net.
+    который для путей Directory API всегда использует основной хост
+    api360.yandex.net.
     """
     resp = await request('POST', org_path(org_id, 'users'),
                          params={'org_id': org_id}, json=payload,

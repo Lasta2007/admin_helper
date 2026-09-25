@@ -104,9 +104,10 @@
       <h3>Яндекс 360 API настройки (синхронизация с ALD Pro)</h3>
       <label>Хост API</label>
       <select id="y360HostSelect">
-        <option value="cloud-api.yandex.net">https://cloud-api.yandex.net (актуальный)</option>
-        <option value="api360.yandex.net">https://api360.yandex.net (устаревший)</option>
+        <option value="api360.yandex.net">https://api360.yandex.net (основной, все методы Directory API)</option>
+        <option value="cloud-api.yandex.net">https://cloud-api.yandex.net (другие сервисы; /directory/... не поддерживает — 404)</option>
       </select>
+      <small style="color:#888;">Запросы Directory API (списки и создание подразделений/сотрудников, /directory/v1/org/{orgId}/...) приложение всегда отправляет на https://api360.yandex.net — этот метод поддерживается только там (см. <a href="https://yandex.ru/dev/api360/doc/ru/" target="_blank">документацию</a>). На cloud-api.yandex.net такие пути возвращают HTTP 404 NotFoundError.</small>
       <label>ID организации (org_id)</label>
       <input id="y360OrgIdInput" type="text" placeholder="123456">
       <label>ClientID OAuth-приложения</label>
@@ -119,7 +120,7 @@
       <small style="color:#888;">Токен получается по ссылке https://oauth.yandex.ru/authorize?response_type=token&amp;client_id=&lt;ClientID&gt; для приложения с правами directory:read_users, directory:read_departments. Передается в заголовке Authorization: OAuth &lt;токен&gt;.</small>
       <label>Токен для записи (создание подразделений и сотрудников)</label>
       <input id="y360TokenWriteInput" type="password" placeholder="******** (необязательно)">
-      <small style="color:#888;">Методы DepartmentService_Create / UserService_Create на cloud-api.yandex.net доступны только токену корпоративного приложения Яндекс 360 с правами directory:write_departments и directory:write_users. Если обычный OAuth-токен возвращает HTTP 405 MethodNotAllowedError — укажите здесь отдельный токен с правами записи. Оставьте пустым, чтобы использовать основной токен.</small>
+      <small style="color:#888;">Методы DepartmentService_Create / UserService_Create доступны только на основном хосте https://api360.yandex.net (приложение отправляет туда все запросы Directory API) и только при использовании токена корпоративного приложения Яндекс 360 с правами directory:write_departments и directory:write_users. Если токен возвращает HTTP 405 MethodNotAllowedError — укажите здесь отдельный токен с правами записи. Оставьте пустым, чтобы использовать основной токен.</small>
       <button id="testY360ConnectionBtn">Проверить подключение к Яндекс 360</button>
       <button id="saveY360SettingsBtn">Сохранить настройки Яндекс 360</button>
       

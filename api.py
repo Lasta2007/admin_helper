@@ -132,10 +132,13 @@ class AldProConnectionTest(BaseModel):
 
 
 class Yandex360Settings(BaseModel):
-    # основной хост API Яндекс 360: создание подразделений
-    # (DepartmentService_Create) поддерживается только на api360.yandex.net
+    # основной хост API Яндекс 360. ВАЖНО: запросы Directory API
+    # (/directory/v1/org/{orgId}/... — чтение и создание подразделений/
+    # сотрудников) приложение всегда отправляет на api360.yandex.net,
+    # т.к. только там они поддерживаются (см. yandex360.resolve_base_url).
     api_host: str = "api360.yandex.net"
-    # дополнительный хост (не все методы); пусто — не использовать
+    # дополнительный хост (другие сервисы; /directory/... возвращает 404);
+    # пусто — не использовать
     api_host_alt: str = "cloud-api.yandex.net"
     org_id: str = ""
     oauth_token: str = ""
