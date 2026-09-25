@@ -627,7 +627,6 @@ async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]
         raise RuntimeError('Не задан базовый OU ALD Pro (поле «Базовый OU» на '
                            'странице Яндекс 360 или в настройках интеграции)')
     base_dn = unquote(base_dn)
-    domain = str(settings.get('email_domain') or '').strip().lstrip('@').lower()
 
     client = await ald_pro._get_authenticated_client()
     if not client:
@@ -676,9 +675,11 @@ async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]
         node['children'].sort(key=lambda n: n['name'].lower())
         return node
 
-    root = await walk(base_dn, '', '', 0)
+    base_node = await walk(base_dn, '', '', 0)
 
     # --- пользователи каждого узла ------------------------------------------
+    # (запрашиваем и для базового OU до отсечения его из дерева: его сотрудники
+    #  попадут в служебный узел «Без подразделения»)
     seen_logins: set = set()
 
     async def load_users(node: dict):
@@ -700,10 +701,8 @@ async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]
             source = 'mail'
             if not email and '@' in upn:
                 email, source = _ald_norm_email(upn), 'upn'
-            if not email:
-                email = f"{login.lower()}@{domain}" if domain \
-                    else f"{login.lower()}@mail.local"
-                source = 'generated'
+            # Почта не генерируется: если у пользователя нет реального
+            # адреса (mail / userPrincipalName), email остаётся пустым.
             node['users'].append({
                 'login': login,
                 'email': email,
@@ -724,6 +723,17 @@ async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]
     await asyncio.gather(*(load_users(n) for n in all_nodes),
                          return_exceptions=True)
 
+    # --- отсечение базового OU из дерева -------------------------------------
+    # Базовый OU НЕ включается в дерево: его непосредственные дочерние OU
+    # становятся корневыми узлами (childID=0). Пользователи, привязанные
+    # к самому базовому OU, попадают в служебный узел «Без подразделения».
+    roots: List[dict] = list(base_node['children'])
+    for r in roots:
+        r['childID'] = 0
+        r['isRoot'] = True
+    nodes_by_dn.pop(base_dn.lower(), None)
+    all_nodes = [n for n in all_nodes if n is not base_node]
+
     # --- служебный узел «Без подразделения» ----------------------------------
     orphan = {
         'id': -1,
@@ -734,23 +744,22 @@ async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]
         'isRoot': True,
         'isServiceNode': True,
         'children': [],
-        'users': [],
+        'users': list(base_node['users']),
     }
 
+    roots.sort(key=lambda n: n['name'].lower())
     stats = {
         'base_dn': base_dn,
         'departments': len(all_nodes),
-        'root_departments': 1,
-        'users_total': sum(len(n['users']) for n in all_nodes),
+        'root_departments': len(roots),
+        'users_total': sum(len(n['users']) for n in all_nodes)
+                       + len(orphan['users']),
         'users_matched': sum(len(n['users']) for n in all_nodes),
         'users_without_department': len(orphan['users']),
-        'emails_generated': sum(
-            1 for n in all_nodes for u in n['users']
-            if u['email_source'] == 'generated'),
     }
     return {
         'base_dn': base_dn,
-        'roots': [root],
+        'roots': roots,
         'orphan_node': orphan,
         'all_nodes': all_nodes,
         'node_by_dn': nodes_by_dn,
@@ -762,12 +771,13 @@ def render_ald_tree_text(tree: Dict[str, Any]) -> str:
     """ASCII-представление дерева ALD Pro: Название (id=N, childID=M)."""
     lines: List[str] = []
     stats = tree.get('stats', {})
-    lines.append('ALD Pro: дерево от базового OU "%s" '
-                 '(подразделений=%d, пользователей=%d)'
+    lines.append('ALD Pro: дерево подразделений внутри базового OU "%s" '
+                 '(сам базовый OU в дерево не включён; '
+                 'подразделений=%d, пользователей=%d)'
                  % (stats.get('base_dn', ''), stats.get('departments', 0),
                     stats.get('users_total', 0)))
     lines.append('Формат: Название (id=ID узла в дереве, childID=ID родителя; '
-                 'для корневого OU childID=0)')
+                 'для корневых подразделений childID=0)')
 
     def fmt(node: dict) -> str:
         users = len(node.get('users') or [])
