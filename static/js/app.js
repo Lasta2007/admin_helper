@@ -845,6 +845,7 @@ async function loadYandex360Settings() {
       document.getElementById('y360OrgIdInput').value = data.org_id || '';
       document.getElementById('y360ClientIdInput').value = data.client_id || '';
       document.getElementById('y360TokenInput').value = data.oauth_token || '';
+      document.getElementById('y360TokenWriteInput').value = data.oauth_token_write || '';
     }
   } catch (e) {
     console.error('Ошибка загрузки настроек Яндекс 360:', e);
@@ -857,7 +858,8 @@ document.getElementById('saveY360SettingsBtn').onclick = async () => {
     api_host: document.getElementById('y360HostSelect').value,
     org_id: document.getElementById('y360OrgIdInput').value.trim(),
     client_id: document.getElementById('y360ClientIdInput').value.trim(),
-    oauth_token: document.getElementById('y360TokenInput').value.trim()
+    oauth_token: document.getElementById('y360TokenInput').value.trim(),
+    oauth_token_write: document.getElementById('y360TokenWriteInput').value.trim()
   };
 
   try {
@@ -885,7 +887,8 @@ document.getElementById('testY360ConnectionBtn').onclick = async () => {
   const settings = {
     api_host: document.getElementById('y360HostSelect').value,
     org_id: document.getElementById('y360OrgIdInput').value.trim(),
-    oauth_token: document.getElementById('y360TokenInput').value.trim()
+    oauth_token: document.getElementById('y360TokenInput').value.trim(),
+    oauth_token_write: document.getElementById('y360TokenWriteInput').value.trim()
   };
 
   try {
@@ -897,7 +900,16 @@ document.getElementById('testY360ConnectionBtn').onclick = async () => {
 
     const result = await res.json();
     if (res.ok && result.success) {
-      alert('Подключение к Яндекс 360 успешно! ' + (result.detail || ''));
+      let msg = 'Подключение к Яндекс 360 успешно! ' + (result.detail || '');
+      if (result.write_access === true) {
+        msg += '\n\nПрава на запись (создание подразделений/сотрудников) подтверждены.';
+      } else if (result.write_access === false) {
+        msg += '\n\nВНИМАНИЕ: ' + (result.write_error || '') +
+               '\nСинхронизация не сможет создавать подразделения и сотрудников. ' +
+               'Укажите в поле «Токен для записи» токен корпоративного приложения ' +
+               'с правами directory:write_departments / directory:write_users.';
+      }
+      alert(msg);
     } else {
       alert('Ошибка подключения: ' + (result.detail || 'Неизвестная ошибка'));
     }

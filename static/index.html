@@ -114,9 +114,12 @@
         <input id="y360ClientIdInput" type="text" placeholder="например, e1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6" style="flex: 1;">
         <button id="y360GetTokenLinkBtn">Ссылка для получения токена</button>
       </div>
-      <label>OAuth-токен</label>
+      <label>OAuth-токен (чтение каталога)</label>
       <input id="y360TokenInput" type="password" placeholder="********">
-      <small style="color:#888;">Токен получается по ссылке https://oauth.yandex.ru/authorize?response_type=token&amp;client_id=&lt;ClientID&gt; для приложения с правами directory:read_users, directory:read_departments (для синхронизации — write). Передается в заголовке Authorization: OAuth &lt;токен&gt;.</small>
+      <small style="color:#888;">Токен получается по ссылке https://oauth.yandex.ru/authorize?response_type=token&amp;client_id=&lt;ClientID&gt; для приложения с правами directory:read_users, directory:read_departments. Передается в заголовке Authorization: OAuth &lt;токен&gt;.</small>
+      <label>Токен для записи (создание подразделений и сотрудников)</label>
+      <input id="y360TokenWriteInput" type="password" placeholder="******** (необязательно)">
+      <small style="color:#888;">Методы DepartmentService_Create / UserService_Create на cloud-api.yandex.net доступны только токену корпоративного приложения Яндекс 360 с правами directory:write_departments и directory:write_users. Если обычный OAuth-токен возвращает HTTP 405 MethodNotAllowedError — укажите здесь отдельный токен с правами записи. Оставьте пустым, чтобы использовать основной токен.</small>
       <button id="testY360ConnectionBtn">Проверить подключение к Яндекс 360</button>
       <button id="saveY360SettingsBtn">Сохранить настройки Яндекс 360</button>
       

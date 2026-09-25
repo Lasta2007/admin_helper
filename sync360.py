@@ -585,7 +585,8 @@ def _norm_dept_name(name: str) -> str:
 async def sync_departments(ous: List[dict], y360_state: dict,
                            client, org_id: str, report: dict,
                            settings_parent_dept: str = '',
-                           root_dn: str = '', dry_run: bool = False):
+                           root_dn: str = '', dry_run: bool = False,
+                           write_token: Optional[str] = None):
     """Сопоставить департаменты Яндекс 360 с OU ALD Pro и создать недостающие.
 
     Особенности:
@@ -711,7 +712,8 @@ async def sync_departments(ous: List[dict], y360_state: dict,
                 res = await yandex360.create_department(
                     client, org_id, name=name,
                     parent_department_id=parent_id,
-                    note='ald_pro_dn=%s' % dn)
+                    note='ald_pro_dn=%s' % dn,
+                    token=write_token)
             if res.get('success'):
                 new_id = res.get('id') or ''
                 if new_id:
@@ -742,10 +744,14 @@ async def sync_departments(ous: List[dict], y360_state: dict,
                 # складываем всё в план ручного создания
                 create_failed_perm = True
                 report['errors'].append(
-                    "DepartmentService_Create недоступен (HTTP %s): %s — "
-                    "проверьте хост API (нужен cloud-api.yandex.net) и право "
-                    "directory:write_departments у OAuth-токена. Оставшиеся "
-                    "подразделения помещены в план ручного создания."
+                    "DepartmentService_Create вернул HTTP %s: %s. "
+                    "Метод создания подразделений доступен только при "
+                    "авторизации токеном корпоративного приложения с правом "
+                    "directory:write_departments (обычный OAuth-токен «личного» "
+                    "приложения возвращает 405 MethodNotAllowedError). "
+                    "Укажите токен с правами записи в поле «Токен для записи» "
+                    "(на странице настроек Яндекс 360) и повторите синхронизацию. "
+                    "Оставшиеся подразделения помещены в план создания."
                     % (status, detail[:120]))
             else:
                 report['errors'].append(
@@ -780,7 +786,8 @@ def _apply_created_departments(y360_state: dict, to_create: List[dict]):
 # ---------------------------------------------------------------------------
 
 async def sync_users(users: Dict[str, dict], y360_state: dict,
-                     client, org_id: str, settings: dict, report: dict):
+                     client, org_id: str, settings: dict, report: dict,
+                     write_token: Optional[str] = None):
     """
     Обновить сотрудников Яндекс 360 по данным ALD Pro и заблокировать
     тех, кого больше нет в ALD Pro.
@@ -841,9 +848,12 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
 
     async def create_employee(payload: dict) -> Dict[str, Any]:
         """Создать сотрудника (UserService_Create)."""
+        headers = None
+        if write_token:
+            headers = {'Authorization': f'OAuth {write_token}'}
         async with sem:
             resp = await client.post(users_url, params={'org_id': org_id},
-                                     json=payload)
+                                     json=payload, headers=headers)
         if resp.status_code not in (200, 201):
             return {'success': False, 'status': resp.status_code,
                     'detail': resp.text[:300]}
@@ -921,11 +931,13 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
                 if status in (405, 403):
                     create_api_blocked = True
                     report['errors'].append(
-                        "UserService_Create недоступен (HTTP %s): %s — "
-                        "проверьте хост API (нужен cloud-api.yandex.net) и "
-                        "право directory:write_users у OAuth-токена. "
-                        "Оставшиеся пользователи помещены в план ручного "
-                        "создания." % (status, detail[:120]))
+                        "UserService_Create вернул HTTP %s: %s. Метод создания "
+                        "сотрудников доступен только токену корпоративного "
+                        "приложения с правом directory:write_users. Укажите "
+                        "токен с правами записи в поле «Токен для записи» "
+                        "(настройки Яндекс 360). Оставшиеся пользователи "
+                        "помещены в план ручного создания."
+                        % (status, detail[:120]))
                 elif status == 409 or 'alreadyexist' in body_l \
                         or 'уже существ' in body_l:
                     # логин занят (например, почтовый ящик заведён ранее) —
@@ -1133,18 +1145,21 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         base = yandex360.api_base_url()
         headers = {'Authorization': f'OAuth {token}',
                    'Accept': 'application/json'}
+        # Отдельный токен для операций записи (создание подразделений и
+        # сотрудников). Если не задан — используется основной oauth_token.
+        write_token = (yandex360.get_write_token() or token).strip()
         async with yandex360.make_async_client(base_url=base, headers=headers) as client:
             await sync_departments(state['ous'], y360_state, client, org_id,
                                    report,
                                    settings.get('parent_department_id', ''),
-                                   root_dn=root_dn)
+                                   root_dn=root_dn, write_token=write_token)
             # Пользователи OU, подразделения которых отсутствуют в Яндекс 360
             # (план создания), не должны считаться «несопоставленными»:
             # добавляем их в состояние с пустым id.
             _apply_created_departments(y360_state,
                                        report['departments']['to_create'])
             await sync_users(state['users'], y360_state, client, org_id,
-                             settings, report)
+                             settings, report, write_token=write_token)
 
         result['success'] = not report['errors']
         result['error'] = ('; '.join(report['errors'][:5])) or None
