@@ -495,6 +495,373 @@ def get_last_status() -> Dict[str, Any]:
     return status if isinstance(status, dict) else {}
 
 
+# ---------------------------------------------------------------------------
+# ALD Pro: дерево OU и пользователи subtree базового OU
+# ---------------------------------------------------------------------------
+#
+# Источник данных — API ALD Pro (см. 09_Документация_API_ALD_Pro):
+#   * GET /api/ds/organizational-units/{dn}/organizational-units — дети OU;
+#   * GET /api/ds/organizational-units/{dn}/users-list — пользователи OU.
+#
+# Идентификаторы в дереве (условные, стабильные между запусками):
+#   * id      — порядковый номер подразделения в дереве (1, 2, 3 ...);
+#               узел «Без подразделения» получает отрицательный id (-1).
+#   * childID — id родительского узла; для корневого (базового) OU childID = 0.
+# В текстовом выводе рядом с названием:  Название (id=N, childID=M).
+
+ALD_SETTINGS_KEY = 'y360_sync_settings'   # общие настройки выгрузки (root_ou_dn и др.)
+ALD_STATUS_KEY = 'aldpro_tree_status'     # результат последней операции по ALD Pro
+ALD_ORPHANS_TITLE = 'Без подразделения'
+ALD_MAX_DEPTH = 40                        # защита от некорректного цикла в каталоге
+
+
+def get_ald_sync_settings() -> Dict[str, Any]:
+    """Настройки выгрузки (базовый OU ALD Pro, домен почты и т.д.)."""
+    import sync360 as _legacy
+    try:
+        return dict(_legacy.get_sync_settings())
+    except Exception:
+        s = get_module_settings(ALD_SETTINGS_KEY)
+        return s if isinstance(s, dict) else {}
+
+
+def save_ald_sync_settings(root_ou_dn: str = None, email_domain: str = None,
+                           parent_department_id: str = None,
+                           sync_interval_minutes: int = None,
+                           block_missing_users: bool = None) -> Dict[str, Any]:
+    """Частичное обновление настроек выгрузки (сохраняются в общую БД)."""
+    import sync360 as _legacy
+    cur = get_ald_sync_settings()
+    new = {
+        'root_ou_dn': (cur.get('root_ou_dn', '') if root_ou_dn is None
+                       else root_ou_dn.strip()),
+        'email_domain': (cur.get('email_domain', '') if email_domain is None
+                         else email_domain.strip()),
+        'parent_department_id': (cur.get('parent_department_id', '')
+                                 if parent_department_id is None
+                                 else str(parent_department_id).strip()),
+        'sync_interval_minutes': (int(cur.get('sync_interval_minutes') or 60)
+                                  if sync_interval_minutes is None
+                                  else int(sync_interval_minutes)),
+        'block_missing_users': (bool(cur.get('block_missing_users', True))
+                                if block_missing_users is None
+                                else bool(block_missing_users)),
+    }
+    _legacy.save_sync_settings(new)
+    return new
+
+
+def _ald_first(d: dict, *keys, default=None):
+    """Первое непустое значение среди ключей (без учёта регистра)."""
+    lowered = {str(k).lower(): v for k, v in d.items()}
+    for key in keys:
+        v = lowered.get(key.lower())
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if v not in (None, '', []):
+            return v
+    return default
+
+
+def _ald_norm_email(value) -> str:
+    import re
+    if not value:
+        return ''
+    if isinstance(value, list):
+        value = ','.join(str(v) for v in value)
+    m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', str(value))
+    return m.group(0).lower() if m else ''
+
+
+def _ald_parse_user_items(result: Any) -> List[dict]:
+    """Вытащить плоский список записей пользователей из ответа users-list."""
+    items: List[Any] = []
+    if isinstance(result, list):
+        items = result
+    elif isinstance(result, dict):
+        data = result.get('data')
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            for key in ('userlistitems', 'users', 'items', 'content'):
+                if isinstance(data.get(key), list):
+                    items = data[key]
+                    break
+    out: List[dict] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        inner = raw.get('userlistitem')
+        out.append(inner if isinstance(inner, dict) else raw)
+    return out
+
+
+async def fetch_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
+    """Получить из ALD Pro дерево OU subtree базового OU и пользователей OU.
+
+    Обход детей выполняется рекурсивно (флаг is_leaf у ALD Pro ненадёжен),
+    пользователи запрашиваются для каждого узла. Возвращает структуру:
+      {
+        'base_dn': <DN базового OU>,
+        'roots': [ <узел>, ... ],           # обычно один корень = базовый OU
+        'all_nodes': [ <узел>, ... ],       # плоский список (родители раньше)
+        'stats': {...},
+      }
+    Узел:
+      {
+        'id': int,                          # условный id узла в дереве
+        'childID': int,                     # id родителя; 0 для корневого OU
+        'name': str, 'dn': str, 'parent_dn': str,
+        'isRoot': bool, 'isServiceNode': bool,
+        'children': [...], 'users': [{'login','email','displayName',...}],
+      }
+    """
+    import asyncio
+    from urllib.parse import unquote
+    import ald_pro
+
+    settings = get_ald_sync_settings()
+    base_dn = (base_ou_dn if base_ou_dn is not None
+               else settings.get('root_ou_dn', '')).strip()
+    if not base_dn:
+        raise RuntimeError('Не задан базовый OU ALD Pro (поле «Базовый OU» на '
+                           'странице Яндекс 360 или в настройках интеграции)')
+    base_dn = unquote(base_dn)
+    domain = str(settings.get('email_domain') or '').strip().lstrip('@').lower()
+
+    client = await ald_pro._get_authenticated_client()
+    if not client:
+        raise RuntimeError('ALD Pro не настроен или недоступен — проверьте '
+                           'подключение на странице «ALD Pro»')
+
+    nodes_by_dn: Dict[str, dict] = {}
+    next_id = 1
+
+    def add_node(dn: str, name: str, parent_dn: str) -> dict:
+        nonlocal next_id
+        node = {
+            'id': next_id,
+            'childID': 0,
+            'name': (name or '').strip() or dn.split(',')[0].lstrip('OUou='),
+            'dn': dn,
+            'parent_dn': parent_dn,
+            'isRoot': not parent_dn,
+            'isServiceNode': False,
+            'children': [],
+            'users': [],
+        }
+        next_id += 1
+        nodes_by_dn[dn.lower()] = node
+        return node
+
+    async def walk(dn: str, name: str, parent_dn: str, depth: int) -> dict:
+        node = add_node(dn, name, parent_dn)
+        node['childID'] = 0 if not parent_dn else \
+            (nodes_by_dn.get(parent_dn.lower(), {}).get('id') or 0)
+        if depth >= ALD_MAX_DEPTH:
+            logger.warning('ALD Pro: достигнута максимальная глубина дерева '
+                           '(%d), обход ниже %s остановлен', ALD_MAX_DEPTH, dn)
+            return node
+        children = await ald_pro.fetch_child_units(dn, client=client)
+        grandkids = await asyncio.gather(*(
+            walk(unquote(str(ch.get('dn') or '')),
+                 str(ch.get('name') or ''), dn, depth + 1)
+            for ch in children if ch.get('dn')),
+            return_exceptions=True)
+        for gk in grandkids:
+            if isinstance(gk, Exception):
+                logger.warning('ALD Pro: ошибка обхода ветки: %s', gk)
+            elif isinstance(gk, dict):
+                node['children'].append(gk)
+        node['children'].sort(key=lambda n: n['name'].lower())
+        return node
+
+    root = await walk(base_dn, '', '', 0)
+
+    # --- пользователи каждого узла ------------------------------------------
+    seen_logins: set = set()
+
+    async def load_users(node: dict):
+        res = await ald_pro.get_organizational_unit_users(node['dn'],
+                                                          client=client)
+        for raw in _ald_parse_user_items(res):
+            login = str(_ald_first(raw, 'userlistitem_login', 'login',
+                                   'sAMAccountName', 'samaccountname', 'uid',
+                                   default='') or '').strip()
+            if not login or login.lower() in seen_logins:
+                continue
+            seen_logins.add(login.lower())
+            upn = str(_ald_first(raw, 'userPrincipalName',
+                                 'userprincipalname',
+                                 'userlistitem_user_principal_name',
+                                 default='') or '').strip()
+            email = _ald_norm_email(_ald_first(raw, 'userlistitem_mail',
+                                               'mail', 'email'))
+            source = 'mail'
+            if not email and '@' in upn:
+                email, source = _ald_norm_email(upn), 'upn'
+            if not email:
+                email = f"{login.lower()}@{domain}" if domain \
+                    else f"{login.lower()}@mail.local"
+                source = 'generated'
+            node['users'].append({
+                'login': login,
+                'email': email,
+                'email_source': source,
+                'displayName': str(_ald_first(raw, 'userlistitem_common_name',
+                                              'cn', 'display_name',
+                                              'displayName', default=login)),
+                'firstName': str(_ald_first(raw, 'userlistitem_first_name',
+                                            'givenName', default='') or ''),
+                'lastName': str(_ald_first(raw, 'userlistitem_last_name',
+                                           'sn', default='') or ''),
+                'position': str(_ald_first(raw, 'userlistitem_title', 'title',
+                                           default='') or ''),
+                'ou_dn': node['dn'],
+            })
+
+    all_nodes = sorted(nodes_by_dn.values(), key=lambda n: n['id'])
+    await asyncio.gather(*(load_users(n) for n in all_nodes),
+                         return_exceptions=True)
+
+    # --- служебный узел «Без подразделения» ----------------------------------
+    orphan = {
+        'id': -1,
+        'childID': 0,
+        'name': ALD_ORPHANS_TITLE,
+        'dn': '',
+        'parent_dn': '',
+        'isRoot': True,
+        'isServiceNode': True,
+        'children': [],
+        'users': [],
+    }
+
+    stats = {
+        'base_dn': base_dn,
+        'departments': len(all_nodes),
+        'root_departments': 1,
+        'users_total': sum(len(n['users']) for n in all_nodes),
+        'users_matched': sum(len(n['users']) for n in all_nodes),
+        'users_without_department': len(orphan['users']),
+        'emails_generated': sum(
+            1 for n in all_nodes for u in n['users']
+            if u['email_source'] == 'generated'),
+    }
+    return {
+        'base_dn': base_dn,
+        'roots': [root],
+        'orphan_node': orphan,
+        'all_nodes': all_nodes,
+        'node_by_dn': nodes_by_dn,
+        'stats': stats,
+    }
+
+
+def render_ald_tree_text(tree: Dict[str, Any]) -> str:
+    """ASCII-представление дерева ALD Pro: Название (id=N, childID=M)."""
+    lines: List[str] = []
+    stats = tree.get('stats', {})
+    lines.append('ALD Pro: дерево от базового OU "%s" '
+                 '(подразделений=%d, пользователей=%d)'
+                 % (stats.get('base_dn', ''), stats.get('departments', 0),
+                    stats.get('users_total', 0)))
+    lines.append('Формат: Название (id=ID узла в дереве, childID=ID родителя; '
+                 'для корневого OU childID=0)')
+
+    def fmt(node: dict) -> str:
+        users = len(node.get('users') or [])
+        suffix = f' [сотрудников: {users}]' if users else ''
+        return f"{node['name']} (id={node['id']}, childID={node['childID']}){suffix}"
+
+    def walk(node: dict, prefix: str, is_last: bool, is_root_call: bool):
+        if is_root_call:
+            lines.append(fmt(node))
+            new_prefix = ''
+        else:
+            lines.append(prefix + ('└─ ' if is_last else '├─ ') + fmt(node))
+            new_prefix = prefix + ('   ' if is_last else '│  ')
+        children = node.get('children') or []
+        last = len(children) - 1
+        for i, child in enumerate(children):
+            walk(child, new_prefix, i == last, False)
+
+    for root in tree['roots']:
+        walk(root, '', False, True)
+    orphan = tree.get('orphan_node')
+    if orphan and orphan['users']:
+        walk(orphan, '', True, True)
+    return '\n'.join(lines)
+
+
+def ald_tree_to_json(tree: Dict[str, Any]) -> Dict[str, Any]:
+    """Машиночитаемое представление дерева ALD Pro (для отображения в UI)."""
+    def node_to_dict(node: dict) -> dict:
+        return {
+            'id': node['id'],
+            'childID': node['childID'],
+            'name': node['name'],
+            'dn': node['dn'],
+            'isRoot': node['isRoot'],
+            'isServiceNode': node['isServiceNode'],
+            'userCount': len(node['users']),
+            'users': node['users'],
+            'children': [node_to_dict(c) for c in node['children']],
+        }
+    return {
+        'source': 'ald_pro',
+        'base_dn': tree['base_dn'],
+        'stats': tree['stats'],
+        'tree': [node_to_dict(r) for r in tree['roots']],
+        'withoutDepartment': node_to_dict(tree['orphan_node'])
+        if tree['orphan_node']['users'] else None,
+    }
+
+
+async def get_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
+    """Публичная операция: построить дерево ALD Pro и вернуть JSON + текст.
+
+    base_ou_dn — базовый OU из запроса пользователя; если пустой — берётся
+    сохранённая настройка root_ou_dn. Результат сохраняется в статус.
+    """
+    started = datetime.now().isoformat(timespec='seconds')
+    try:
+        tree = await fetch_ald_pro_tree(base_ou_dn)
+        payload = ald_tree_to_json(tree)
+        text = render_ald_tree_text(tree)
+        status = {
+            'success': True,
+            'started': started,
+            'finished': datetime.now().isoformat(timespec='seconds'),
+            'base_dn': tree['base_dn'],
+            'stats': tree['stats'],
+            'error': None,
+        }
+        result = {'success': True, 'json': payload, 'text': text,
+                  'stats': tree['stats']}
+    except Exception as e:
+        logger.exception('Ошибка построения дерева ALD Pro')
+        status = {
+            'success': False,
+            'started': started,
+            'finished': datetime.now().isoformat(timespec='seconds'),
+            'base_dn': (base_ou_dn or '').strip() or None,
+            'stats': None,
+            'error': str(e),
+        }
+        result = {'success': False, 'error': str(e)}
+    try:
+        set_module_settings(ALD_STATUS_KEY, status)
+    except Exception as e:
+        logger.warning('Не удалось сохранить статус дерева ALD Pro: %s', e)
+    return result
+
+
+def get_ald_pro_last_status() -> Dict[str, Any]:
+    status = get_module_settings(ALD_STATUS_KEY)
+    return status if isinstance(status, dict) else {}
+
+
 # Совместимость с текущим api.py/main.py (до ЭТАПА 2 полная синхронизация
 # выполняется старым модулем sync360.py; здесь — заглушки).
 

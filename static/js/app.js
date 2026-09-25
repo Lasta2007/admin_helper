@@ -963,6 +963,7 @@ function showY360Sync() {
   document.getElementById('y360SyncView').classList.remove('hidden');
   loadY360SyncSettings();
   loadY360SyncStatus();
+  if (typeof loadY360AldTreeStatus === 'function') loadY360AldTreeStatus();
 }
 
 document.getElementById('y360SyncNav').onclick = () => showY360Sync();
@@ -1127,5 +1128,144 @@ document.getElementById('y360SyncPreviewBtn').onclick = async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Предпросмотр изменений';
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Яндекс 360: дерево подразделений и пользователей ALD Pro (новая страница)
+// ---------------------------------------------------------------------------
+
+let y360AldTreeData = null;   // последний полученный ответ /aldpro/tree
+
+function y360Escape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function y360SetAldViewMode(mode) {
+  const textEl = document.getElementById('y360AldTreeText');
+  const htmlEl = document.getElementById('y360AldTreeHtml');
+  const btnText = document.getElementById('y360AldTreeViewModeText');
+  const btnHtml = document.getElementById('y360AldTreeViewModeNested');
+  if (mode === 'html') {
+    textEl.classList.add('hidden');
+    htmlEl.classList.remove('hidden');
+    btnHtml.classList.add('y360-ald-view-active');
+    btnText.classList.remove('y360-ald-view-active');
+  } else {
+    htmlEl.classList.add('hidden');
+    textEl.classList.remove('hidden');
+    btnText.classList.add('y360-ald-view-active');
+    btnHtml.classList.remove('y360-ald-view-active');
+  }
+}
+
+document.getElementById('y360AldTreeViewModeText').onclick = () => y360SetAldViewMode('text');
+document.getElementById('y360AldTreeViewModeNested').onclick = () => y360SetAldViewMode('html');
+
+function renderAldTreeHtml(container, nodes) {
+  container.innerHTML = '';
+  const build = (list, parent) => {
+    list.forEach(node => {
+      const div = document.createElement('div');
+      div.className = 'y360-ald-node';
+      const label = document.createElement('span');
+      label.className = 'y360-ald-node-label';
+      label.textContent = node.name || '(без названия)';
+      div.appendChild(label);
+      const ids = document.createElement('span');
+      ids.className = 'y360-ald-node-id';
+      ids.textContent = `(id=${node.id}, childID=${node.childID})`;
+      div.appendChild(ids);
+      if (node.userCount) {
+        const uc = document.createElement('span');
+        uc.className = 'y360-ald-node-users';
+        uc.textContent = `[сотрудников: ${node.userCount}]`;
+        div.appendChild(uc);
+      }
+      if ((node.users || []).length) {
+        const ul = document.createElement('ul');
+        ul.className = 'y360-ald-user-list';
+        node.users.forEach(u => {
+          const li = document.createElement('li');
+          li.innerHTML = '<span class="y360-ald-user-login">' + y360Escape(u.login) +
+            '</span> — ' + y360Escape(u.displayName || '') +
+            ' <span class="y360-ald-user-email">&lt;' + y360Escape(u.email) + '&gt;</span>';
+          li.title = u.dn || u.ou_dn || '';
+          ul.appendChild(li);
+        });
+        div.appendChild(ul);
+      }
+      parent.appendChild(div);
+      if ((node.children || []).length) {
+        const kidsWrap = document.createElement('div');
+        div.appendChild(kidsWrap);
+        build(node.children, kidsWrap);
+      }
+    });
+  };
+  build(nodes || [], container);
+  if (y360AldTreeData && y360AldTreeData.withoutDepartment) {
+    build([y360AldTreeData.withoutDepartment], container);
+  }
+}
+
+function showAldTreeResult(data) {
+  y360AldTreeData = data.json || null;
+  document.getElementById('y360AldTreeText').textContent = data.text || '(пусто)';
+  const statusEl = document.getElementById('y360AldTreeStatus');
+  const st = (data.json && data.json.stats) || {};
+  statusEl.textContent = `Базовый OU: ${st.base_dn || ''} · ` +
+    `подразделений: ${st.departments || 0} · ` +
+    `пользователей: ${st.users_total || 0}` +
+    (st.emails_generated ? ` (почта сгенерирована из логина: ${st.emails_generated})` : '');
+  renderAldTreeHtml(document.getElementById('y360AldTreeHtml'),
+                    (data.json && data.json.tree) || []);
+}
+
+async function loadY360AldTreeStatus() {
+  try {
+    const res = await fetch('/api/yandex360/aldpro/tree/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s && s.success && !y360AldTreeData) {
+      document.getElementById('y360AldTreeStatus').textContent =
+        `Последнее успешное построение: ${s.finished || ''} · ` +
+        `базовый OU: ${s.base_dn || ''} · ` +
+        `подразделений: ${(s.stats || {}).departments || 0}, ` +
+        `пользователей: ${(s.stats || {}).users_total || 0}. ` +
+        `Нажмите «Построить дерево ALD Pro» для актуальных данных.`;
+    }
+  } catch (e) { /* не критично */ }
+}
+
+document.getElementById('y360AldTreeBtn').onclick = async () => {
+  const btn = document.getElementById('y360AldTreeBtn');
+  const baseOu = document.getElementById('y360SyncRootOuInput').value.trim();
+  if (!baseOu) {
+    alert('Укажите базовый OU ALD Pro (DN), от которого строить дерево.');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Построение...';
+  const statusEl = document.getElementById('y360AldTreeStatus');
+  statusEl.textContent = 'Читаем структуру OU и пользователей из ALD Pro...';
+  try {
+    const url = '/api/yandex360/aldpro/tree?base_ou=' + encodeURIComponent(baseOu);
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      document.getElementById('y360AldTreeText').textContent =
+        'Ошибка: ' + (data.detail || res.status);
+      return;
+    }
+    showAldTreeResult(data);
+  } catch (e) {
+    statusEl.textContent = 'Ошибка запроса дерева ALD Pro: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Построить дерево ALD Pro';
   }
 };
