@@ -534,7 +534,30 @@ async def _paginate(method: str, path: str, org_id: str,
                     'offset': offset, **(params or {})})
         if resp.status_code != 200:
             hint = ''
-            if resp.status_code == 404:
+            if resp.status_code == 401:
+                # Хост теперь правильный (api360.yandex.net отвечает по
+                # Directory API), значит проблема в авторизации. Типичные
+                # причины см. в модуле yandex360 (раздел «Авторизация»).
+                hint = ("\nHTTP 401 от api360.yandex.net означает, что "
+                        "используемый OAuth-токен не принят сервисом. Частые "
+                        "причины:\n"
+                        "1) Токен получен для ЛИЧНОГО приложения Яндекс ID, а "
+                        "Directory API организации требует корпоративное "
+                        "приложение Яндекс 360, установленное в организации "
+                        "(получается через кабинет администратора 360, права "
+                        "directory:read_*/write_*).\n"
+                        "2) Пользователь, от имени которого выдан токен, не "
+                        "является сотрудником организации org_id или не имеет "
+                        "прав администратора на каталог.\n"
+                        "3) Токен истёк (OAuth-токены вида ya29.A... имеют "
+                        "срок действия) — получите новый по ссылке из "
+                        "настроек интеграции.\n"
+                        "Ответ сервера: %s" % resp.text[:200])
+            elif resp.status_code == 403:
+                hint = (" HTTP 403: токен принят, но не хватает прав "
+                        "(directory:read_users / directory:read_departments) "
+                        "или пользователь не состоит в организации.")
+            elif resp.status_code == 404:
                 url_host = str(resp.request.url).split('/')[2]
                 hint = (" Проверьте org_id и права токена "
                         "(directory:read_users / directory:read_departments)"
@@ -542,9 +565,9 @@ async def _paginate(method: str, path: str, org_id: str,
                         " Запрос ушёл не на api360.yandex.net — "
                         "проверьте настройки хоста в модуле")
             raise RuntimeError(
-                "Яндекс 360 вернул HTTP %s при %s %s (%s): %s%s"
+                "Яндекс 360 вернул HTTP %s при %s %s (%s)%s"
                 % (resp.status_code, method, resp.request.url,
-                   resp.headers.get('allow', '-'), resp.text[:200], hint))
+                   resp.headers.get('allow', '-'), hint))
         body = resp.json() or {}
         page = body.get('items') or []
         items.extend(page)
