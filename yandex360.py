@@ -524,13 +524,21 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
     HTTP 405 MethodNotAllowedError). Перенаправление выполняет request().
     """
     payload: Dict[str, Any] = {'name': (name or '').strip()[:150]}
-    if parent_department_id not in (None, '', 0, '0'):
-        try:
-            payload['parentDepartmentId'] = int(parent_department_id)
-        except (TypeError, ValueError):
-            payload['parentDepartmentId'] = str(parent_department_id)
-    else:
-        payload['parentDepartmentId'] = None
+    # ВАЖНО (согласно DepartmentService_Create): поле parentDepartmentId
+    # ОБЯЗАТЕЛЬНО и должно быть целочисленным. Значения null / строка
+    # приводят к HTTP 400 "Ошибка проверки поля parentDepartmentId".
+    # Для корневого подразделения родителем является сама организация —
+    # передаём org_id.
+    pid_raw = str(parent_department_id if parent_department_id is not None
+                  else '').strip()
+    try:
+        payload['parentDepartmentId'] = int(pid_raw)
+    except (TypeError, ValueError):
+        return {'success': False, 'status': 0,
+                'detail': ('Некорректный parentDepartmentId %r: идентификатор '
+                           'подразделения должен быть числовым'
+                           % parent_department_id),
+                'url': ''}
     if note:
         payload['note'] = note[:200]
     resp = await request('POST', org_path(org_id, 'departments'),
