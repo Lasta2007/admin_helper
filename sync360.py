@@ -62,6 +62,12 @@ DEFAULT_SETTINGS = {
     # ID родительского департамента Яндекс 360 для корневого OU ALD Pro
     # (пусто — корневой OU создаётся на верхнем уровне)
     'parent_department_id': '',
+    # DN технических/служебных OU, поддеревья которых НЕ выгружаются вовсе
+    # (например контейнеры пользователей и компьютеров домена), один на
+    # строку. Совпадение — по окончанию DN без учёта регистра.
+    'exclude_ou_dns': ('cn=users,cn=accounts\n'
+                       'cn=computers,cn=accounts\n'
+                       'cn=builtin,cn=accounts'),
 }
 
 # Страницы выдачи Directory API (максимум по документации — 5000)
@@ -72,6 +78,36 @@ API_CONCURRENCY = 4
 MAX_OU_DEPTH = 25
 # Сколько дочерних OU обходится параллельно на одном уровне дерева
 OU_LEVEL_BATCH = 8
+
+
+def _norm_dn(dn: str) -> str:
+    """DN для сравнения: без пробелов вокруг запятых, нижний регистр."""
+    return ','.join(p.strip().lower() for p in (dn or '').split(',') if p.strip())
+
+
+def _is_excluded_dn(dn: str, excluded: List[str]) -> bool:
+    """True, если dn сам является исключённым или лежит внутри исключённого."""
+    ndn = _norm_dn(dn)
+    if not ndn:
+        return False
+    for ex in excluded:
+        nex = _norm_dn(ex)
+        if not nex:
+            continue
+        if ndn == nex or ndn.endswith(',' + nex):
+            return True
+    return False
+
+
+def get_excluded_ou_dns(settings: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Список DN исключаемых OU из настроек (по строке на каждый DN)."""
+    settings = settings or get_sync_settings()
+    raw = settings.get('exclude_ou_dns') or ''
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = re.split(r'[\n;]+', str(raw))
+    return [i.strip() for i in items if i and i.strip()]
 
 
 def get_sync_settings() -> Dict[str, Any]:
@@ -311,7 +347,8 @@ def _ou_name_from_dn(dn: str) -> str:
 
 
 async def fetch_ald_state(root_dn: str,
-                          email_domain: str = '') -> Dict[str, Any]:
+                          email_domain: str = '',
+                          exclude_dns: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Собрать состояние ALD Pro: структуру подразделений subtree root_dn и
     его пользователей.
@@ -338,6 +375,7 @@ async def fetch_ald_state(root_dn: str,
     ous: List[dict] = []
     users: Dict[str, dict] = {}
     domain = (email_domain or '').strip().lstrip('@').lower()
+    excluded = [d for d in (exclude_dns or []) if d.strip()]
 
     def add_ou(dn: str, name: str, parent: str):
         dn = unquote(str(dn or ''))
@@ -360,6 +398,13 @@ async def fetch_ald_state(root_dn: str,
         for ch in children:
             dn = unquote(str(ch.get('dn') or ''))
             if not dn or dn.lower() in known:
+                continue
+            # технические/служебные контейнеры не выгружаем ВОВСЕ — вместе
+            # со всем поддеревом (в них обычно лежат встроенные учетки и
+            # компьютеры, а не сотрудники организации)
+            if _is_excluded_dn(dn, excluded):
+                logger.info("OU '%s' исключён из синхронизации настройкой "
+                            "exclude_ou_dns — поддерево не обходится", dn)
                 continue
             known[dn.lower()] = {'dn': dn}
             add_ou(dn, ch.get('name'), parent_dn)
@@ -822,8 +867,10 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
     try:
         # 1. Данные ALD Pro (поддерево головного OU; сам головной OU
         #    синхронизатором не создаётся)
-        state = await fetch_ald_state(root_dn,
-                                      email_domain=settings.get('email_domain', ''))
+        state = await fetch_ald_state(
+            root_dn,
+            email_domain=settings.get('email_domain', ''),
+            exclude_dns=get_excluded_ou_dns(settings))
         report['ald_ous'] = len(state['ous'])
         report['ald_users'] = len(state['users'])
         report['ald_users_email_generated'] = state['generated_emails']
@@ -859,13 +906,30 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
             'report': report,
             'error': result.get('error'),
         })
-        logger.info("Синхронизация Яндекс 360 завершена (%s): OU=%d, "
-                    "пользователей=%d, создано=%d, перенесено=%d, "
-                    "заблокировано=%d, ошибок=%d", trigger,
-                    report['ald_ous'], report['ald_users'],
-                    report['departments']['created'],
-                    report['users']['created'], report['users']['moved'],
-                    report['users']['blocked'], len(report['errors']))
+        dep = report.get('departments') or {}
+        usr = report.get('users') or {}
+        # ВАЖНО: количество плейсхолдеров %s строго совпадает с числом
+        # аргументов (в прошлой версии здесь возникал
+        # "TypeError: not all arguments converted during string formatting")
+        logger.info(
+            "Синхронизация Яндекс 360 завершена (trigger=%s): "
+            "OU=%s, пользователей ALD Pro=%s, "
+            "подразделения: создано=%s сопоставлено=%s "
+            "исключено(головной OU)=%s, "
+            "пользователи: создано=%s обновлено=%s перенесено=%s "
+            "заблокировано=%s без изменений=%s пропущено=%s, "
+            "ошибок=%s%s",
+            trigger,
+            report.get('ald_ous'), report.get('ald_users'),
+            dep.get('created', 0), dep.get('matched', 0),
+            dep.get('skipped_root', 0),
+            usr.get('created', 0), usr.get('updated', 0),
+            usr.get('moved', 0), usr.get('blocked', 0),
+            usr.get('unchanged', 0), usr.get('skipped', 0),
+            len(report.get('errors') or []),
+            (' | первые ошибки: ' + '; '.join((report.get('errors') or [])[:2]))
+            if report.get('errors') else '',
+        )
         set_setting('y360_last_sync_ts', str(int(time.time())))
     return result
 
@@ -893,8 +957,10 @@ async def build_preview() -> Dict[str, Any]:
     if not org_id or not token:
         raise RuntimeError('Яндекс 360 не настроен (org_id / OAuth-токен)')
 
-    state = await fetch_ald_state(root_dn,
-                                  email_domain=settings.get('email_domain', ''))
+    state = await fetch_ald_state(
+        root_dn,
+        email_domain=settings.get('email_domain', ''),
+        exclude_dns=get_excluded_ou_dns(settings))
     y360_state = await fetch_y360_state()
 
     root_dn_lower = root_dn.lower()
