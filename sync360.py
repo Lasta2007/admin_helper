@@ -25,9 +25,12 @@ ALD Pro (корень задаётся в настройках), и пользо
         переносе пользователя между OU в ALD Pro пользователь переносится
         в соответствующий департамент Яндекс 360
         (PATCH /v1/directory/organizations/{org_id}/users/{login}).
-  * Новые пользователи создаются через POST /v1/directory/.../users с
-    логином ALD Pro и паролем-заглушкой; приглашение на e-mail не
-    отправляется (sendEmail=false), чтобы не рассылать письма при выгрузке.
+  * Новые пользователи создаются через UserService_Create (POST
+    /v1/directory/organizations/{org_id}/users) с логином ALD Pro и
+    паролем-заглушкой; приглашение на e-mail не отправляется, чтобы не
+    рассылать письма при выгрузке. Если создание через API недоступно
+    (HTTP 405/403 — устаревший хост или отсутствие прав directory:write_*),
+    пользователь попадает в план ручного создания.
 
 Интервал автоматической синхронизации задаётся в настройках модуля
 (поле sync_interval_minutes) и обрабатывается фоновой задачей в main.py.
@@ -37,6 +40,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional
@@ -526,6 +530,23 @@ async def _paginate(client, url: str, org_id: str) -> List[dict]:
     return items
 
 
+async def fetch_y360_departments(client, org_id: str) -> List[dict]:
+    deps = await _paginate(client, f'/v1/directory/organizations/{org_id}/departments', org_id)
+    return [{'id': str(d.get('id')), 'name': d.get('name') or '',
+             'parent': str(d.get('parentDepartmentId') or ''),
+             'note': d.get('note') or ''} for d in deps]
+
+
+async def fetch_y360_users(client, org_id: str) -> List[dict]:
+    emps = await _paginate(client, f'/v1/directory/organizations/{org_id}/users', org_id)
+    return [{'id': str(e.get('id')), 'login': str(e.get('login') or ''),
+             'email': _norm_email(e.get('email')),
+             'alt_emails': [_norm_email(a) for a in (e.get('altemails') or [])],
+             'department': str(e.get('department') or ''),
+             'note': e.get('note') or '',
+             'blocked': bool(e.get('blocked'))} for e in emps]
+
+
 async def fetch_y360_state() -> Dict[str, Any]:
     """Получить текущие подразделения и сотрудников организации Яндекс 360."""
     settings = yandex360.get_settings()
@@ -537,20 +558,9 @@ async def fetch_y360_state() -> Dict[str, Any]:
     base = yandex360.api_base_url()
     headers = {'Authorization': f'OAuth {token}', 'Accept': 'application/json'}
     async with yandex360.make_async_client(base_url=base, headers=headers) as client:
-        deps, emps = await asyncio.gather(
-            _paginate(client, f'/v1/directory/organizations/{org_id}/departments', org_id),
-            _paginate(client, f'/v1/directory/organizations/{org_id}/users', org_id),
-        )
-
-    departments = [{'id': str(d.get('id')), 'name': d.get('name') or '',
-                    'parent': str(d.get('parentDepartmentId') or ''),
-                    'note': d.get('note') or ''} for d in deps]
-    employees = [{'id': str(e.get('id')), 'login': str(e.get('login') or ''),
-                  'email': _norm_email(e.get('email')),
-                  'alt_emails': [_norm_email(a) for a in (e.get('altemails') or [])],
-                  'department': str(e.get('department') or ''),
-                  'note': e.get('note') or '',
-                  'blocked': bool(e.get('blocked'))} for e in emps]
+        departments, employees = await asyncio.gather(
+            fetch_y360_departments(client, org_id),
+            fetch_y360_users(client, org_id))
     return {'departments': departments, 'employees': employees}
 
 
@@ -565,30 +575,77 @@ def _dept_note(department: dict) -> str:
     return department.get('note') or ''
 
 
+def _norm_dept_name(name: str) -> str:
+    """Нормализованное название подразделения для сопоставления (без учёта
+    регистра, лишних пробелов и «ёлочек»)."""
+    return re.sub(r'\s+', ' ', (name or '').replace('\u00ab', '')
+                  .replace('\u00bb', '')).strip().lower()
+
+
 async def sync_departments(ous: List[dict], y360_state: dict,
                            client, org_id: str, report: dict,
                            settings_parent_dept: str = '',
-                           root_dn: str = ''):
-    """Создать/сопоставить департаменты Яндекс 360 для OU ALD Pro.
+                           root_dn: str = '', dry_run: bool = False):
+    """Сопоставить департаменты Яндекс 360 с OU ALD Pro и создать недостающие.
 
-    Головной (корневой) OU ALD Pro `root_dn` из синхронизации исключается:
-    подразделение с таким именем в Яндекс 360 не создаётся — его дочерние OU
-    становятся корневыми департаментами (при наличии parent_department_id из
-    настроек вешаются на него).
+    Особенности:
+    - Названия OU ALD Pro хранятся в виде полных DN
+      ('ou=Отдел,ou=Родитель,...'). Для Яндекс 360 используется ТОЛЬКО
+      короткое название из первого RDN ('Отдел'), а не полный DN.
+    - Головной (корневой) OU ALD Pro `root_dn` из синхронизации исключается:
+      подразделение с таким именем в Яндекс 360 не создаётся — его дочерние OU
+      становятся корневыми департаментами (при наличии parent_department_id из
+      настроек вешаются на него).
+    - Недостающие подразделения СОЗДАЮТСЯ через DepartmentService_Create
+      (POST /v1/directory/organizations/{org_id}/departments), иерархия
+      сохраняется через parentDepartmentId. Созданные подразделения сразу
+      добавляются в y360_state, чтобы дети и пользователи обрабатывались в
+      этом же проходе. Примечание "ald_pro_dn=<dn>" пишется сразу при
+      создании (и дорабатывается PATCH-ем для найденных по имени).
+    - dry_run=True: записи в API не выполняются (ни POST, ни PATCH),
+      недостающие подразделения попадают только в план создания
+      report['departments']['to_create'].
+    - Если создание невозможно (HTTP 405 — метод недоступен на текущем
+      хосте/токене без права directory:write_departments), подразделение
+      попадает в план создания report['departments']['to_create'] — после
+      ручного заведения в панели администратора следующая синхронизация
+      сопоставит его автоматически.
     """
     deps = y360_state['departments']
-    by_note_dn = {}
+    by_note_dn = {}           # dn из примечания ald_pro_dn= -> id
+    by_parent_name = {}       # (parent_id, имя) -> id
+    by_name = {}              # имя -> [id]
     for d in deps:
         m = NOTE_DN_RE.search(_dept_note(d))
         if m:
             by_note_dn[m.group(1).lower()] = d['id']
+        key = (d['parent'], _norm_dept_name(d['name']))
+        by_parent_name.setdefault(key, d['id'])
+        if key[0] == '':
+            by_parent_name.setdefault(('', _norm_dept_name(d['name'])), d['id'])
+        by_name.setdefault(_norm_dept_name(d['name']), []).append(d['id'])
 
     sem = asyncio.Semaphore(API_CONCURRENCY)
     dep_url = f'/v1/directory/organizations/{org_id}/departments'
     root_dn_lower = (root_dn or '').strip().lower()
+    default_parent = str(settings_parent_dept or '').strip()
+    create_failed_perm = False  # POST /departments недоступен (405/403)
+
+    async def try_patch_note(dept_id: str, dn: str) -> None:
+        """Пометить найденный департамент примечанием с DN ALD Pro."""
+        if dry_run:
+            return
+        try:
+            async with sem:
+                await client.patch(f"{dep_url}/{dept_id}",
+                                   params={'org_id': org_id},
+                                   json={'note': 'ald_pro_dn=%s' % dn})
+        except Exception:
+            pass  # примечание — лишь ускорение сопоставления, не ошибка
 
     for ou in ous:  # список отсортирован: родители идут раньше детей
         dn = ou['dn']
+        name = _ou_name_from_dn(dn) or ou.get('name') or dn  # короткое имя!
         map_key = 'dep:' + dn
         if root_dn_lower and dn.lower() == root_dn_lower:
             # головной подразделение ALD Pro НЕ создаётся в Яндекс 360;
@@ -599,42 +656,123 @@ async def sync_departments(ous: List[dict], y360_state: dict,
             logger.info("Головной OU '%s' исключён из синхронизации "
                         "(не создаётся в Яндекс 360)", dn)
             continue
+
         dept_id = _map_get(map_key)
         if dept_id and not any(d['id'] == dept_id for d in deps):
-            dept_id = None  # департамент был удалён вручную — пересоздаём
+            dept_id = None  # департамент был удалён вручную — ищем заново
+        matched_via_note = False
         if not dept_id:
             dept_id = by_note_dn.get(dn.lower())
+            matched_via_note = bool(dept_id)
+        if not dept_id:
+            # поиск по КОРОТКОМУ имени с учётом родителя (после того, как
+            # родительское OU уже сопоставлено в этом же проходе)
+            parent_id = (_map_get('dep:' + ou['parent'])
+                         if ou['parent'] else None)
+            candidates = []
+            if ou['parent']:
+                if parent_id:
+                    candidates.append((parent_id, _norm_dept_name(name)))
+            else:
+                # непосредственные дети головного OU: корневые департаменты
+                # или департаменты внутри parent_department_id из настроек
+                candidates.append(('', _norm_dept_name(name)))
+                if default_parent:
+                    candidates.append((default_parent, _norm_dept_name(name)))
+            for c in candidates:
+                dept_id = by_parent_name.get(c)
+                if dept_id:
+                    break
+            if not dept_id:
+                ids = by_name.get(_norm_dept_name(name)) or []
+                if len(ids) == 1:  # имя уникально в организации
+                    dept_id = ids[0]
         if dept_id:
             _map_set(map_key, dept_id)
             report['departments']['matched'] += 1
+            if dry_run:
+                by_note_dn.setdefault(dn.lower(), dept_id)
+            elif not matched_via_note:
+                # сохраняем dn в примечании — следующие прогоны сопоставляются
+                # однозначно, даже при одинаковых именах в разных ветках
+                await try_patch_note(dept_id, dn)
+                by_note_dn[dn.lower()] = dept_id
             continue
+
+        # Подразделение в Яндекс 360 отсутствует — создаём через
+        # DepartmentService_Create. Родительский департамент:
         parent_id = _map_get('dep:' + ou['parent']) if ou['parent'] else None
-        if ou['parent'] and parent_id is None:
-            # родитель — головной OU (исключён из синхронизации) или его
-            # департамент ещё не сопоставлен: такой департамент становится
-            # корневым (вешается на parent_department_id из настроек)
-            parent_id = str(settings_parent_dept or '').strip() or None
-        elif not ou['parent']:
-            # непосредственные дети головного OU — корневые департаменты
-            parent_id = str(settings_parent_dept or '').strip() or None
-        payload = {'name': ou['name'][:150] or dn,
-                   'note': 'ald_pro_dn=%s' % dn}
-        if parent_id:
-            payload['parentDepartmentId'] = int(parent_id)
-        async with sem:
-            resp = await client.post(dep_url, params={'org_id': org_id}, json=payload)
-        if resp.status_code not in (200, 201):
-            report['errors'].append(
-                "Не удалось создать подразделение '%s' в Яндекс 360 "
-                "(HTTP %s): %s" % (dn, resp.status_code, resp.text[:150]))
-            continue
-        created = resp.json() or {}
-        dept_id = str(created.get('id') or '')
-        if dept_id:
-            _map_set(map_key, dept_id)
-            deps.append({'id': dept_id, 'name': ou['name'],
-                         'parent': parent_id or '', 'note': payload['note']})
-            report['departments']['created'] += 1
+        if (not ou['parent'] or ou['parent'].lower() == root_dn_lower
+                or parent_id is None):
+            parent_id = default_parent or None
+
+        if not create_failed_perm and not dry_run:
+            async with sem:
+                res = await yandex360.create_department(
+                    client, org_id, name=name,
+                    parent_department_id=parent_id,
+                    note='ald_pro_dn=%s' % dn)
+            if res.get('success'):
+                new_id = res.get('id') or ''
+                if new_id:
+                    _map_set(map_key, new_id)
+                    deps.append({'id': new_id, 'name': name,
+                                 'parent': str(parent_id or ''),
+                                 'note': 'ald_pro_dn=%s' % dn})
+                    by_note_dn[dn.lower()] = new_id
+                    by_parent_name[(str(parent_id or ''),
+                                    _norm_dept_name(name))] = new_id
+                    by_name.setdefault(_norm_dept_name(name), []).append(new_id)
+                    report['departments']['created'] += 1
+                    logger.info("Создано подразделение '%s' (id=%s, "
+                                "родитель=%s) в Яндекс 360", name, new_id,
+                                parent_id or '—')
+                else:
+                    # создан, но id в ответе не пришёл — обновим состояние
+                    report['departments']['created'] += 1
+                    report['errors'].append(
+                        "Подразделение '%s' создано, но id не получен — "
+                        "сопоставление выполнится на следующем проходе"
+                        % name)
+                continue
+            status = res.get('status')
+            detail = res.get('detail') or ''
+            if status in (405, 403):
+                # Метод/права недоступны — дальнейшие POST бессмысленны,
+                # складываем всё в план ручного создания
+                create_failed_perm = True
+                report['errors'].append(
+                    "DepartmentService_Create недоступен (HTTP %s): %s — "
+                    "проверьте хост API (нужен cloud-api.yandex.net) и право "
+                    "directory:write_departments у OAuth-токена. Оставшиеся "
+                    "подразделения помещены в план ручного создания."
+                    % (status, detail[:120]))
+            else:
+                report['errors'].append(
+                    "Не удалось создать подразделение '%s' в Яндекс 360 "
+                    "(HTTP %s): %s" % (name, status, detail[:150]))
+
+        report['departments']['to_create'].append({
+            'name': name[:150] or dn,
+            'dn': dn,
+            'parent_dn': ou['parent'],
+            'parent_department_id': parent_id or '',
+        })
+        if not dry_run:
+            report['departments']['create_blocked'] = \
+                report['departments'].get('create_blocked', 0) + 1
+            logger.warning("Подразделение '%s' (OU '%s') не создано через "
+                           "API — помещено в план создания.", name, dn)
+
+
+def _apply_created_departments(y360_state: dict, to_create: List[dict]):
+    """Добавить подразделения из плана создания в состояние (для того, чтобы
+    sync_users корректно обрабатывал пользователей несозданных OU)."""
+    for item in to_create:
+        y360_state['departments'].append({
+            'id': '', 'name': item['name'],
+            'parent': item['parent_department_id'],
+            'note': 'ald_pro_dn=%s' % item['dn']})
 
 
 # ---------------------------------------------------------------------------
@@ -644,8 +782,20 @@ async def sync_departments(ous: List[dict], y360_state: dict,
 async def sync_users(users: Dict[str, dict], y360_state: dict,
                      client, org_id: str, settings: dict, report: dict):
     """
-    Создать/обновить сотрудников Яндекс 360 по данным ALD Pro и заблокировать
+    Обновить сотрудников Яндекс 360 по данным ALD Pro и заблокировать
     тех, кого больше нет в ALD Pro.
+
+    Создание НОВЫХ сотрудников выполняется через UserService_Create
+    (POST /v1/directory/organizations/{org_id}/users) с логином ALD Pro,
+    именем из ALD Pro и назначением подразделения сразу при создании
+    (departmentId). Пароль задаётся заглушкой, письмо-приглашение не
+    рассылается (в текущей версии API флаг sendEmail не поддерживается).
+    Если создание невозможно (HTTP 405 — устаревший хост или отсутствие
+    права directory:write_users), пользователь заносится в план создания
+    report['users']['to_create'] — после заведения учётки следующая
+    синхронизация найдёт её по логину/email и применит подразделение.
+    Существующие сотрудники проверяются на наличие в ALD Pro и на
+    принадлежность к подразделениям (перенос выполняется PATCH-запросами).
     """
     employees = y360_state['employees']
     departments = y360_state['departments']
@@ -667,10 +817,19 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
         Для головного OU (и для неизвестных OU) возвращается '' — пустая
         строка означает «в корневом подразделении» (departmentId не задаётся).
         None — соответствие ещё не создано, пользователя обрабатывать рано.
+        Подразделения из плана создания имеют id == '' и трактуются так же,
+        как корневые (пользователь попадёт в план создания без должности).
         """
         if not dn:
             return ''
-        return _map_get('dep:' + dn)
+        mapped = _map_get('dep:' + dn)
+        if mapped is not None:
+            return mapped
+        # сопоставление по примечанию ald_pro_dn= / план создания
+        for d in departments:
+            if dn.lower() in (d.get('note') or '').lower():
+                return d['id'] or ''
+        return None
 
     async def patch_employee(login: str, payload: dict) -> Optional[str]:
         async with sem:
@@ -680,7 +839,22 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
             return "HTTP %s: %s" % (resp.status_code, resp.text[:150])
         return None
 
+    async def create_employee(payload: dict) -> Dict[str, Any]:
+        """Создать сотрудника (UserService_Create)."""
+        async with sem:
+            resp = await client.post(users_url, params={'org_id': org_id},
+                                     json=payload)
+        if resp.status_code not in (200, 201):
+            return {'success': False, 'status': resp.status_code,
+                    'detail': resp.text[:300]}
+        body = resp.json() or {}
+        emp = body.get('employee') or body.get('user') or body
+        return {'success': True,
+                'login': str(emp.get('login') or payload.get('login') or ''),
+                'id': str(emp.get('id') or '')}
+
     processed_logins = set()
+    create_api_blocked = False  # POST /users недоступен (405/403)
 
     for key in sorted(users):
         u = users[key]
@@ -698,42 +872,110 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
         mapped = _user_map_get(login.lower())
 
         if emp is None:
-            # Новый сотрудник: создаём учетную запись в Яндекс 360
             email = u['email']
             if domain and not email.endswith('@' + domain.lower()):
                 email = f"{login}@{domain}"
-            payload = {
+            dept_name = ''
+            if target_dept:
+                dept_name = next((d['name'] for d in departments
+                                  if d['id'] == target_dept), '')
+
+            if not create_api_blocked:
+                payload = {
+                    'login': login,
+                    'email': email,
+                    'firstName': u['firstName'] or login,
+                    'lastName': u['lastName'] or '-',
+                    'blocked': False,
+                    # пароль-заглушка: вход по нему не предполагается,
+                    # пользователь сменит пароль при первом входе
+                    'password': secrets.token_urlsafe(16),
+                }
+                if u.get('displayName'):
+                    payload['displayName'] = u['displayName']
+                if target_dept:
+                    try:
+                        payload['departmentId'] = int(target_dept)
+                    except (TypeError, ValueError):
+                        pass
+                res = await create_employee(payload)
+                if res.get('success'):
+                    new_emp = {'id': res.get('id') or '',
+                               'login': res.get('login') or login,
+                               'email': email, 'alt_emails': [],
+                               'department': target_dept or '',
+                               'note': 'ald_pro_uid=%s' % login,
+                               'blocked': False}
+                    employees.append(new_emp)
+                    emp_by_login[new_emp['login'].lower()] = new_emp
+                    emp_by_email.setdefault(email, new_emp)
+                    report['users']['created'] += 1
+                    _user_map_set(login, email, u['ou_dn'], target_dept)
+                    logger.info("Создан пользователь Яндекс 360: %s (%s, "
+                                "подразделение=%s)", login, email,
+                                dept_name or '—')
+                    continue
+                status = res.get('status')
+                detail = res.get('detail') or ''
+                body_l = detail.lower()
+                if status in (405, 403):
+                    create_api_blocked = True
+                    report['errors'].append(
+                        "UserService_Create недоступен (HTTP %s): %s — "
+                        "проверьте хост API (нужен cloud-api.yandex.net) и "
+                        "право directory:write_users у OAuth-токена. "
+                        "Оставшиеся пользователи помещены в план ручного "
+                        "создания." % (status, detail[:120]))
+                elif status == 409 or 'alreadyexist' in body_l \
+                        or 'уже существ' in body_l:
+                    # логин занят (например, почтовый ящик заведён ранее) —
+                    # создаём учётку с альтернативным логином
+                    alt_login = re.sub(r'[^a-z0-9._-]', '',
+                                       email.lower().replace('@', '.'))
+                    alt_payload = dict(payload)
+                    alt_payload['login'] = alt_login
+                    alt_payload['altemails'] = [email]
+                    res2 = await create_employee(alt_payload)
+                    if res2.get('success'):
+                        new_emp = {'id': res2.get('id') or '',
+                                   'login': alt_login, 'email': email,
+                                   'alt_emails': [],
+                                   'department': target_dept or '',
+                                   'note': 'ald_pro_uid=%s' % login,
+                                   'blocked': False}
+                        employees.append(new_emp)
+                        emp_by_login[alt_login] = new_emp
+                        emp_by_login.setdefault(login.lower(), new_emp)
+                        emp_by_email.setdefault(email, new_emp)
+                        report['users']['created'] += 1
+                        _user_map_set(login, email, u['ou_dn'], target_dept)
+                        logger.info("Создан пользователь Яндекс 360 с "
+                                    "альтернативным логином %s (%s)",
+                                    alt_login, email)
+                        continue
+                    report['errors'].append(
+                        "Не удалось создать пользователя %s (логин занят, "
+                        "создание под %s не выполнено, HTTP %s): %s"
+                        % (login, alt_login, res2.get('status'),
+                           (res2.get('detail') or '')[:120]))
+                else:
+                    report['errors'].append(
+                        "Не удалось создать пользователя %s в Яндекс 360 "
+                        "(HTTP %s): %s" % (login, status, detail[:150]))
+
+            # Фallback: план ручного создания
+            report['users']['to_create'].append({
+                'login': login,
+                'email': email,
                 'firstName': u['firstName'] or login,
                 'lastName': u['lastName'] or '-',
-                'email': email,
-                'login': login,
-                'password': 'AldPr$ync%d' % (int(time.time()) % 100000),
-                'note': 'ald_pro_uid=%s' % login,
-                'sendEmail': False,
-            }
-            if target_dept:
-                payload['departmentId'] = int(target_dept)
-            if u['displayName'] and u['displayName'] != login:
-                payload['commonName'] = u['displayName']
-            async with sem:
-                resp = await client.post(users_url, params={'org_id': org_id},
-                                         json=payload)
-            if resp.status_code not in (200, 201):
-                report['errors'].append(
-                    "Не удалось создать пользователя %s в Яндекс 360 "
-                    "(HTTP %s): %s" % (login, resp.status_code, resp.text[:150]))
-                continue
-            created = resp.json() or {}
-            new_id = str(created.get('id') or '')
-            if new_id:
-                employees.append({'id': new_id, 'login': login,
-                                  'email': _norm_email(created.get('email')),
-                                  'alt_emails': [], 'department': target_dept,
-                                  'note': payload['note'],
-                                  'blocked': False})
-                emp_by_login[login.lower()] = employees[-1]
-            _user_map_set(login, email, u['ou_dn'], target_dept)
-            report['users']['created'] += 1
+                'displayName': u['displayName'] or '',
+                'ou_dn': u['ou_dn'],
+                'department_id': target_dept or '',
+                'department_name': dept_name,
+            })
+            report['users']['create_blocked'] = \
+                report['users'].get('create_blocked', 0) + 1
             continue
 
         # Сотрудник существует — сверяем принадлежность к подразделению и
@@ -823,8 +1065,13 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
 
     1. Читает настройки (корневой OU, интервал, домен почты).
     2. Собирает дерево OU и пользователей из ALD Pro (головной OU
-       исключается из создания в Яндекс 360).
-    3. Синхронизирует подразделения, затем пользователей.
+       исключается; названия подразделений — короткие имена, не DN).
+    3. Сопоставляет и создаёт подразделения (DepartmentService_Create),
+       создаёт новых сотрудников (UserService_Create) и обновляет
+       существующих (перенос между департаментами, разблокировка).
+       Если создание объектов через API недоступно (HTTP 405/403), они
+       попадают в планы создания report['departments']['to_create'] и
+       report['users']['to_create'] для ручного заведения.
     4. Блокирует сотрудники Яндекс 360, удалённые из ALD Pro.
     """
     started = time.time()
@@ -838,9 +1085,11 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         'ald_users': 0,
         'ald_users_email_generated': 0,
         'ald_users_email_from_upn': 0,
-        'departments': {'created': 0, 'matched': 0, 'skipped_root': 0},
+        'departments': {'created': 0, 'matched': 0, 'skipped_root': 0,
+                        'create_blocked': 0, 'to_create': []},
         'users': {'created': 0, 'moved': 0, 'updated': 0, 'blocked': 0,
-                  'unchanged': 0, 'skipped': 0},
+                  'unchanged': 0, 'skipped': 0,
+                  'create_blocked': 0, 'to_create': []},
         'errors': [],
     }
     result = {'success': False, 'report': report}
@@ -879,7 +1128,8 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         # 2. Текущее состояние Яндекс 360
         y360_state = await fetch_y360_state()
 
-        # 3. Запись изменений в Яндекс 360
+        # 3. Запись изменений в Яндекс 360: подразделения создаются через
+        #    DepartmentService_Create, сотрудники — через UserService_Create
         base = yandex360.api_base_url()
         headers = {'Authorization': f'OAuth {token}',
                    'Accept': 'application/json'}
@@ -888,6 +1138,11 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
                                    report,
                                    settings.get('parent_department_id', ''),
                                    root_dn=root_dn)
+            # Пользователи OU, подразделения которых отсутствуют в Яндекс 360
+            # (план создания), не должны считаться «несопоставленными»:
+            # добавляем их в состояние с пустым id.
+            _apply_created_departments(y360_state,
+                                       report['departments']['to_create'])
             await sync_users(state['users'], y360_state, client, org_id,
                              settings, report)
 
@@ -914,20 +1169,23 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         logger.info(
             "Синхронизация Яндекс 360 завершена (trigger=%s): "
             "OU=%s, пользователей ALD Pro=%s, "
-            "подразделения: создано=%s сопоставлено=%s "
-            "исключено(головной OU)=%s, "
-            "пользователи: создано=%s обновлено=%s перенесено=%s "
-            "заблокировано=%s без изменений=%s пропущено=%s, "
+            "подразделения: сопоставлено=%s исключено(головной OU)=%s "
+            "к созданию=%s, "
+            "пользователи: обновлено=%s перенесено=%s "
+            "заблокировано=%s без изменений=%s пропущено=%s "
+            "к созданию=%s, "
             "ошибок=%s%s",
             trigger,
             report.get('ald_ous'), report.get('ald_users'),
-            dep.get('created', 0), dep.get('matched', 0),
+            dep.get('matched', 0),
             dep.get('skipped_root', 0),
-            usr.get('created', 0), usr.get('updated', 0),
+            len(dep.get('to_create') or []),
+            usr.get('updated', 0),
             usr.get('moved', 0), usr.get('blocked', 0),
             usr.get('unchanged', 0), usr.get('skipped', 0),
+            len(usr.get('to_create') or []),
             len(report.get('errors') or []),
-            (' | первые ошибки: ' + '; '.join((report.get('errors') or [])[:2]))
+            (' | первые ошибки: ' + '; '.join((report.get('errors') or [])[:2]))\
             if report.get('errors') else '',
         )
         set_setting('y360_last_sync_ts', str(int(time.time())))
@@ -940,12 +1198,18 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
 
 async def build_preview() -> Dict[str, Any]:
     """
-    Собрать отчёт о планируемых изменениях БЕЗ записи в Яндекс 360.
+    Собрать отчёт о планируемых изменениях БЕЗ записей в Яндекс 360.
 
-    Показывает: подразделения ALD Pro, которые будут созданы (головной OU
-    исключается); пользователей, которые будут созданы; переносы между
+    Показывает: подразделения ALD Pro, которых ещё нет в Яндекс 360
+    (головной OU исключается; имена — короткие названия, не DN) — они будут
+    СОЗДАНЫ через DepartmentService_Create при запуске синхронизации;
+    сотрудников ALD Pro, которых нет в Яндекс 360 — они будут созданы через
+    UserService_Create; переносы существующих сотрудников между
     подразделениями; сотрудников Яндекс 360, отсутствующих в ALD Pro
     (кандидатов на блокировку).
+    Реализована через запуск настоящей процедуры синхронизации подразделений
+    в режиме dry_run (без POST/PATCH), поэтому план создания совпадает с
+    реальным поведением (включая иерархию родительских департаментов).
     """
     settings = get_sync_settings()
     root_dn = (settings.get('root_ou_dn') or '').strip()
@@ -964,24 +1228,85 @@ async def build_preview() -> Dict[str, Any]:
     y360_state = await fetch_y360_state()
 
     root_dn_lower = root_dn.lower()
+    default_parent = str(settings.get('parent_department_id') or '').strip()
 
-    # Соответствия департаментов (по кэшу или примечанию ald_pro_dn=)
+    # План создания подразделений считаем той же процедурой, что и реальная
+    # синхронизация, но в режиме dry_run (без POST/PATCH к API): сопоставления
+    # по кэшу y360_sync_map, примечанию ald_pro_dn= и короткому имени с
+    # учётом родителя. Временный report нужен только для to_create/errors.
+    tmp_report = {'departments': {'created': 0, 'matched': 0,
+                                  'skipped_root': 0, 'to_create': []},
+                  'errors': []}
+    await sync_departments(state['ous'], y360_state, None, org_id,
+                           tmp_report, default_parent, root_dn=root_dn,
+                           dry_run=True)
+    new_departments = tmp_report['departments']['to_create']
+
+    # Соответствия OU -> департамент: реально существующие департаменты
+    # (id != '') из плана создания не учитываем — они ещё не заведены.
     dept_by_note = {}
+    by_parent_name = {}
+    by_name = {}
+    ou_by_dn = {}
     for d in y360_state['departments']:
         m = NOTE_DN_RE.search(d.get('note') or '')
         if m:
             dept_by_note[m.group(1).lower()] = d['id']
+        key = (d['parent'], _norm_dept_name(d['name']))
+        by_parent_name.setdefault(key, d['id'])
+        by_name.setdefault(_norm_dept_name(d['name']), []).append(d['id'])
+    for ou in state['ous']:
+        ou_by_dn[ou['dn'].lower()] = ou
+
+    resolved: Dict[str, Optional[str]] = {}  # dn(lower) -> id департамента
+
+    def resolve_dept(dn: str) -> Optional[str]:
+        """Найти департамент Яндекс 360 для OU (рекурсивно по родителю)."""
+        if not dn:
+            return ''
+        key = dn.lower()
+        if key in resolved:
+            return resolved[key]
+        if key == root_dn_lower:
+            resolved[key] = ''
+            return ''
+        resolved[key] = None  # защита от зацикливания
+        cached = _map_get('dep:' + dn)
+        if cached:
+            resolved[key] = cached
+            return cached
+        by_note = dept_by_note.get(key)
+        if by_note:
+            resolved[key] = by_note
+            return by_note
+        ou = ou_by_dn.get(key)
+        name = _ou_name_from_dn(dn) if ou else ''
+        name = (name or (ou or {}).get('name') or '').strip()
+        parent_dn = (ou or {}).get('parent') or ''
+        result = None
+        parent_id = resolve_dept(parent_dn) if parent_dn else ''
+        candidates = []
+        if parent_dn and parent_dn.lower() != root_dn_lower and parent_id:
+            candidates.append((parent_id, _norm_dept_name(name)))
+        if not parent_dn or parent_dn.lower() == root_dn_lower:
+            candidates.append(('', _norm_dept_name(name)))
+            if default_parent:
+                candidates.append((default_parent, _norm_dept_name(name)))
+        for c in candidates:
+            if c in by_parent_name:
+                result = by_parent_name[c]
+                break
+        if result is None:
+            ids = by_name.get(_norm_dept_name(name)) or []
+            if len(ids) == 1:
+                result = ids[0]
+        resolved[key] = result
+        return result
 
     def dept_for_ou(dn: str) -> Optional[str]:
-        if dn and dn.lower() == root_dn_lower:
-            return ''  # головной OU не создаётся — пользователи вне департамента
-        return _map_get('dep:' + dn) or dept_by_note.get((dn or '').lower())
-
-    new_departments = [
-        {'dn': ou['dn'], 'name': ou['name'], 'parent': ou['parent']}
-        for ou in state['ous']
-        if ou['dn'].lower() != root_dn_lower and not dept_for_ou(ou['dn'])
-    ]
+        if not dn or dn.lower() == root_dn_lower:
+            return ''
+        return resolve_dept(dn)
 
     emp_by_login = {e['login'].lower(): e for e in y360_state['employees'] if e['login']}
     emp_by_email = {}
@@ -990,6 +1315,7 @@ async def build_preview() -> Dict[str, Any]:
             if mail:
                 emp_by_email.setdefault(mail, e)
 
+    domain = (settings.get('email_domain') or '').strip()
     ald_logins = set()
     users_to_create, users_to_move = [], []
     for key in sorted(state['users']):
@@ -997,11 +1323,14 @@ async def build_preview() -> Dict[str, Any]:
         ald_logins.add(key)
         target_dept = dept_for_ou(u['ou_dn'])
         emp = emp_by_login.get(key) or emp_by_email.get(u['email'])
+        email = u['email']
+        if domain and not email.endswith('@' + domain.lower()):
+            email = f"{u['login']}@{domain}"
         if emp is None:
             users_to_create.append({
-                'login': u['login'], 'email': u['email'],
+                'login': u['login'], 'email': email,
                 'displayName': u['displayName'], 'ou_dn': u['ou_dn'],
-                'department': target_dept or '(будет создан)',
+                'department': target_dept or '(подразделение будет создано)',
             })
         elif target_dept and emp['department'] != target_dept:
             users_to_move.append({
@@ -1039,4 +1368,12 @@ async def build_preview() -> Dict[str, Any]:
         'users_to_move': users_to_move[:500],
         'users_missing_in_ald': users_missing_in_ald[:500],
         'block_missing_users': bool(settings.get('block_missing_users')),
+        'creation_via_api': (
+            'Подразделения из списка «новые» будут созданы через '
+            'DepartmentService_Create (POST /v1/directory/.../departments), '
+            'сотрудники из списка «к созданию» — через UserService_Create '
+            '(POST /v1/directory/.../users) с логином ALD Pro и паролем-'
+            'заглушкой. Требуется право OAuth directory:write_departments / '
+            'directory:write_users; если API вернёт 405/403, объекты попадут '
+            'в план ручного создания в отчёте синхронизации.'),
     }

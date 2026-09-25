@@ -1011,13 +1011,29 @@ function renderY360Report(last) {
   }
   const r = last.report;
   const u = r.users || {};
+  const d = r.departments || {};
   let text = `Запуск (${r.trigger || ''}): ${r.started_at || ''}, длительность ${r.duration_sec || '?'} с\n` +
     `Статус: ${last.success ? 'успешно' : 'с ошибками'}\n` +
     `Корневой OU: ${r.root_ou || ''}\n` +
-    `Подразделений ALD Pro: ${r.ald_ous}, создано в Яндекс 360: ${(r.departments||{}).created}, сопоставлено: ${(r.departments||{}).matched}\n` +
-    `Пользователей ALD Pro с e-mail: ${r.ald_users_with_email} (без e-mail пропущено: ${r.ald_users_skipped_no_email})\n` +
-    `Создано: ${u.created||0}, перенесено между подразделениями: ${u.moved||0}, обновлено: ${u.updated||0}, ` +
-    `заблокировано (нет в ALD Pro): ${u.blocked||0}, без изменений: ${u.unchanged||0}, пропущено: ${u.skipped||0}\n`;
+    `Подразделений ALD Pro: ${r.ald_ous}, сопоставлено: ${d.matched || 0}, ` +
+    `создано (API): ${d.created || 0}, ` +
+    `головной OU исключён: ${d.skipped_root || 0}, ` +
+    `к созданию вручную: ${(d.to_create || []).length}\n` +
+    `Пользователей ALD Pro: ${r.ald_users} (почта по умолчанию, если отсутствует)\n` +
+    `Создано (API): ${u.created || 0}, ` +
+    `перенесено между подразделениями: ${u.moved || 0}, обновлено: ${u.updated || 0}, ` +
+    `заблокировано (нет в ALD Pro): ${u.blocked || 0}, без изменений: ${u.unchanged || 0}, ` +
+    `пропущено: ${u.skipped || 0}, к созданию вручную: ${(u.to_create || []).length}\n`;
+  if ((d.to_create || []).length) {
+    text += `\nПодразделения к созданию в Яндекс 360 (${d.to_create.length}):\n` +
+      d.to_create.slice(0, 20).map(x => ' + ' + x.name +
+        (x.parent_department_id ? ' (в dept ' + x.parent_department_id + ')' : '')).join('\n') + '\n';
+  }
+  if ((u.to_create || []).length) {
+    text += `\nСотрудники к созданию в Яндекс 360 (${u.to_create.length}):\n` +
+      u.to_create.slice(0, 20).map(x => ' + ' + x.login + ' <' + x.email + '>' +
+        (x.department_name ? ' → ' + x.department_name : '')).join('\n') + '\n';
+  }
   if ((r.errors || []).length) {
     text += `\nОшибки (${r.errors.length}):\n` + r.errors.slice(0, 20).map(e => ' - ' + e).join('\n');
   }
@@ -1081,13 +1097,14 @@ document.getElementById('y360SyncPreviewBtn').onclick = async () => {
     const data = await res.json();
     if (!res.ok) { box.textContent = 'Ошибка: ' + (data.detail || res.status); return; }
     let text =
-      `ALD Pro: подразделений — ${data.ald_departments_total}, пользователей с e-mail — ${data.ald_users_with_email} (без e-mail пропущено: ${data.ald_users_skipped_no_email})\n` +
+      (data.creation_via_api ? ('СПРАВКА: ' + data.creation_via_api + '\n\n') : '') +
+      `ALD Pro: подразделений — ${data.ald_departments_tree}, пользователей — ${data.ald_users}\n` +
       `Яндекс 360: департаментов — ${data.y360_departments_total}, сотрудников — ${data.y360_users_total}\n\n` +
-      `Будет создано новых подразделений: ${data.new_departments.length}\n` +
-      data.new_departments.slice(0, 30).map(d => ' + ' + d.name + '  [' + d.dn + ']').join('\n') + '\n\n' +
-      `Будет создано новых пользователей: ${data.users_to_create.length}\n` +
+      `Подразделений к созданию (выполнит API DepartmentService_Create): ${data.new_departments.length}\n` +
+      data.new_departments.slice(0, 30).map(d => ' + ' + d.name + '  [parent: ' + (d.parent_department_id || 'корневой') + ']').join('\n') + '\n\n' +
+      `Пользователей к созданию (выполнит API UserService_Create): ${data.users_to_create.length}\n` +
       data.users_to_create.slice(0, 30).map(u => ' + ' + u.login + ' <' + u.email + '> → dept ' + u.department).join('\n') + '\n\n' +
-      `Будет перенесено между подразделениями: ${data.users_to_move.length}\n` +
+      `Будет перенесено между подразделениями (выполнит API): ${data.users_to_move.length}\n` +
       data.users_to_move.slice(0, 30).map(u => ' ~ ' + u.login + ': ' + u.from_department + ' → ' + u.to_department).join('\n') + '\n\n' +
       `Сотрудников Яндекс 360, отсутствующих в ALD Pro${data.block_missing_users ? ' (будут заблокированы)' : ' (блокировка отключена)'}: ${data.users_missing_in_ald.length}\n` +
       data.users_missing_in_ald.slice(0, 30).map(u => ' - ' + u.login + ' <' + (u.email || '') + '> dept ' + u.department).join('\n');
