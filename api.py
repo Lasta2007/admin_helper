@@ -1147,7 +1147,6 @@ async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
                                 'DELETE',
                                 yandex360.org_path(test_data.org_id,
                                                    f'departments/{new_id}'),
-                                params={'org_id': test_data.org_id},
                                 headers={'Authorization':
                                          f'OAuth {write_token}'})
                         except Exception:

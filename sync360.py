@@ -524,23 +524,39 @@ async def fetch_ald_state(root_dn: str,
 
 async def _paginate(method: str, path: str, org_id: str,
                     params: Optional[dict] = None) -> List[dict]:
-    """Выбрать все страницы списка Directory API (limit/offset)."""
+    """Выбрать все страницы списка Directory API.
+
+    СООТВЕТСТВИЕ ДОКУМЕНТАЦИИ (UserService_List / DepartmentService_List,
+    https://yandex.ru/dev/api360/doc/ru/ref/UserService/UserService_List):
+      GET https://api360.yandex.net/directory/v1/org/{orgId}/users?limit=N&page_index=M
+    Единственные query-параметры методов списка — ``limit`` и ``page_index``
+    (номер страницы, НЕ смещение). Идентификатор организации передается
+    ТОЛЬКО в пути (/org/{orgId}); дублировать его query-параметром
+    ``org_id`` не требуется (лишний параметр мог искажать проверку подписи
+    запроса на стороне API).
+    """
     items: List[dict] = []
-    offset = 0
+    page_index = 0
     while True:
         resp = await yandex360.request(
             method, path,
-            params={'org_id': org_id, 'limit': PAGE_LIMIT,
-                    'offset': offset, **(params or {})})
+            params={'limit': PAGE_LIMIT,
+                    'page_index': page_index, **(params or {})})
         if resp.status_code != 200:
             hint = ''
             if resp.status_code == 401:
                 # Хост теперь правильный (api360.yandex.net отвечает по
                 # Directory API), значит проблема в авторизации. Типичные
                 # причины см. в модуле yandex360 (раздел «Авторизация»).
+                # Диагностика: реально ли ушел заголовок Authorization и
+                # какой токен использован (маскируем секрет).
+                auth_hdr = resp.request.headers.get('authorization') or ''
+                tok_mask = (auth_hdr[:14] + '...' + auth_hdr[-4:]
+                            if len(auth_hdr) > 22 else auth_hdr or 'ОТСУТСТВУЕТ')
                 hint = ("\nHTTP 401 от api360.yandex.net означает, что "
-                        "используемый OAuth-токен не принят сервисом. Частые "
-                        "причины:\n"
+                        "используемый OAuth-токен не принят сервисом.\n"
+                        "Заголовок запроса: Authorization: %s\n"
+                        "Частые причины:\n"
                         "1) Токен получен для ЛИЧНОГО приложения Яндекс ID, а "
                         "Directory API организации требует корпоративное "
                         "приложение Яндекс 360, установленное в организации "
@@ -552,7 +568,7 @@ async def _paginate(method: str, path: str, org_id: str,
                         "3) Токен истёк (OAuth-токены вида ya29.A... имеют "
                         "срок действия) — получите новый по ссылке из "
                         "настроек интеграции.\n"
-                        "Ответ сервера: %s" % resp.text[:200])
+                        "Ответ сервера: %s" % (tok_mask, resp.text[:200]))
             elif resp.status_code == 403:
                 hint = (" HTTP 403: токен принят, но не хватает прав "
                         "(directory:read_users / directory:read_departments) "
@@ -571,10 +587,15 @@ async def _paginate(method: str, path: str, org_id: str,
         body = resp.json() or {}
         page = body.get('items') or []
         items.extend(page)
-        total = int(body.get('total') or len(items))
-        offset += PAGE_LIMIT
-        if offset >= total or not page:
+        total = int(body.get('total') or 0)
+        if not page:
             break
+        if total and len(items) >= total:
+            break
+        if not total and len(page) < PAGE_LIMIT:
+            # Сервер не вернул total — считаем страницу неполной последней.
+            break
+        page_index += 1
         await asyncio.sleep(0.1)  # щадим rate limit API
     return items
 

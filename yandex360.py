@@ -472,14 +472,17 @@ def auth_headers(token: Optional[str] = None) -> Dict[str, str]:
     }
 
 
-async def get_departments(limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-    """Получить список подразделений организации (для синхронизации с OU ALD Pro)."""
+async def get_departments(limit: int = 100, page_index: int = 0) -> Dict[str, Any]:
+    """Получить список подразделений организации (DepartmentService_List).
+
+    Параметры согласно документации: только ``limit`` и ``page_index``
+    (orgId — в пути запроса)."""
     if not _y360_settings.get('org_id') or not _y360_settings.get('oauth_token'):
         return {'success': False, 'detail': 'Яндекс 360 не настроен'}
     try:
         response = await request(
             'GET', org_path(_y360_settings['org_id'], 'departments'),
-            params={'limit': limit, 'offset': offset},
+            params={'limit': limit, 'page_index': page_index},
             headers=auth_headers())
         if response.status_code != 200:
             return {'success': False, 'detail': f'HTTP {response.status_code}: {response.text[:150]}'}
@@ -531,7 +534,7 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
     if note:
         payload['note'] = note[:200]
     resp = await request('POST', org_path(org_id, 'departments'),
-                         params={'org_id': org_id}, json=payload,
+                         json=payload,
                          headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201):
         return {'success': False,
@@ -552,7 +555,7 @@ async def update_department(org_id: str, dept_id: str, payload: Dict[str, Any],
     PATCH /directory/v1/org/{orgId}/departments/{id}
     """
     resp = await request('PATCH', org_path(org_id, f'departments/{dept_id}'),
-                         params={'org_id': org_id}, json=payload,
+                         json=payload,
                          headers=auth_headers(token))
     if resp.status_code != 200:
         return {'success': False, 'status': resp.status_code,
@@ -567,7 +570,7 @@ async def patch_user(org_id: str, user_id: str, payload: Dict[str, Any],
     PATCH /directory/v1/org/{orgId}/users/{id}
     """
     resp = await request('PATCH', org_path(org_id, f'users/{user_id}'),
-                         params={'org_id': org_id}, json=payload,
+                         json=payload,
                          headers=auth_headers(token))
     if resp.status_code != 200:
         return {'success': False, 'status': resp.status_code,
@@ -584,7 +587,7 @@ async def create_employee(org_id: str, payload: Dict[str, Any],
     api360.yandex.net.
     """
     resp = await request('POST', org_path(org_id, 'users'),
-                         params={'org_id': org_id}, json=payload,
+                         json=payload,
                          headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201):
         return {'success': False, 'status': resp.status_code,
@@ -597,14 +600,17 @@ async def create_employee(org_id: str, payload: Dict[str, Any],
             'data': body}
 
 
-async def get_users(limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-    """Получить список сотрудников организации (для синхронизации с пользователями ALD Pro)."""
+async def get_users(limit: int = 100, page_index: int = 0) -> Dict[str, Any]:
+    """Получить список сотрудников организации (UserService_List).
+
+    GET /directory/v1/org/{orgId}/users?limit=N&page_index=M — orgId только
+    в пути, query-параметры списка: limit и page_index."""
     if not _y360_settings.get('org_id') or not _y360_settings.get('oauth_token'):
         return {'success': False, 'detail': 'Яндекс 360 не настроен'}
     try:
         response = await request(
             'GET', org_path(_y360_settings['org_id'], 'users'),
-            params={'limit': limit, 'offset': offset},
+            params={'limit': limit, 'page_index': page_index},
             headers=auth_headers())
         if response.status_code != 200:
             return {'success': False, 'detail': f'HTTP {response.status_code}: {response.text[:150]}'}

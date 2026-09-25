@@ -1,6 +1,9 @@
-# Compiled and build artifacts
+# Compiled/Binary files
 __pycache__/
 *.pyc
+
+# Dependency directories
+venv/
 
 # Database files
 admin_helper.db
