@@ -11,10 +11,12 @@ ALD Pro (корень задаётся в настройках), и пользо
     Сотрудники, привязанные непосредственно к головному OU, определяются в
     корневые подразделения Яндекс 360 (без departmentId).
   * OU ALD Pro создаются в Яндекс 360 как департаменты
-    (POST /v1/directory/organizations/{org_id}/departments), иерархия
-    сохраняется через parentDepartmentId. Соответствие OU <-> департамент
-    хранится в локальной БД (таблица y360_sync_map) и восстанавливается по
-    примечанию департамента "ald_pro_dn=<dn>".
+    (POST https://api360.yandex.net/directory/v1/org/{orgId}/departments —
+    метод DepartmentService_Create поддерживается ТОЛЬКО на хосте
+    api360.yandex.net), иерархия сохраняется через parentDepartmentId.
+    Соответствие OU <-> департамент хранится в локальной БД
+    (таблица y360_sync_map) и восстанавливается по примечанию
+    департамента "ald_pro_dn=<dn>".
   * Считается, что электронная почта у пользователей ALD Pro есть по
     умолчанию: адрес берётся из атрибута mail, а если API ALD Pro его не
     вернул — формируется из логина (login@домен из настроек).
@@ -24,13 +26,13 @@ ALD Pro (корень задаётся в настройках), и пользо
       - принадлежность к подразделению сверяется по departmentId: при
         переносе пользователя между OU в ALD Pro пользователь переносится
         в соответствующий департамент Яндекс 360
-        (PATCH /v1/directory/organizations/{org_id}/users/{login}).
+        (PATCH /directory/v1/org/{orgId}/users/{id}).
   * Новые пользователи создаются через UserService_Create (POST
-    /v1/directory/organizations/{org_id}/users) с логином ALD Pro и
-    паролем-заглушкой; приглашение на e-mail не отправляется, чтобы не
-    рассылать письма при выгрузке. Если создание через API недоступно
-    (HTTP 405/403 — устаревший хост или отсутствие прав directory:write_*),
-    пользователь попадает в план ручного создания.
+    /directory/v1/org/{orgId}/users) с логином ALD Pro и паролем-заглушкой;
+    приглашение на e-mail не отправляется, чтобы не рассылать письма при
+    выгрузке. Если создание через API недоступно (HTTP 405/403 — отсутствие
+    прав directory:write_* у токена), пользователь попадает в план ручного
+    создания.
 
 Интервал автоматической синхронизации задаётся в настройках модуля
 (поле sync_interval_minutes) и обрабатывается фоновой задачей в main.py.
@@ -505,20 +507,33 @@ async def fetch_ald_state(root_dn: str,
 
 # ---------------------------------------------------------------------------
 # Чтение данных Яндекс 360
+#
+# ВАЖНО: у API Яндекс 360 два хоста с разными наборами методов
+# (https://yandex.ru/dev/api360/doc/ru/):
+#   - https://api360.yandex.net  — основной хост Directory API, единственный
+#     поддерживает создание подразделений:
+#     POST /directory/v1/org/{orgId}/departments;
+#   - https://cloud-api.yandex.net — дополнительный хост (не все методы).
+# Все запросы выполняются через yandex360.request(), который сам выбирает
+# нужный хост (POST — всегда api360.yandex.net) и повторяет запрос на другом
+# хосте при 404/405.
 # ---------------------------------------------------------------------------
 
-async def _paginate(client, url: str, org_id: str) -> List[dict]:
+async def _paginate(method: str, path: str, org_id: str,
+                    params: Optional[dict] = None) -> List[dict]:
     """Выбрать все страницы списка Directory API (limit/offset)."""
     items: List[dict] = []
     offset = 0
     while True:
-        resp = await client.get(url, params={'org_id': org_id,
-                                             'limit': PAGE_LIMIT,
-                                             'offset': offset})
+        resp = await yandex360.request(
+            method, path,
+            params={'org_id': org_id, 'limit': PAGE_LIMIT,
+                    'offset': offset, **(params or {})})
         if resp.status_code != 200:
             raise RuntimeError(
-                "Яндекс 360 вернул HTTP %s при GET %s: %s"
-                % (resp.status_code, url, resp.text[:200]))
+                "Яндекс 360 вернул HTTP %s при %s %s (%s): %s"
+                % (resp.status_code, method, resp.request.url,
+                   resp.headers.get('allow', '-'), resp.text[:200]))
         body = resp.json() or {}
         page = body.get('items') or []
         items.extend(page)
@@ -530,15 +545,16 @@ async def _paginate(client, url: str, org_id: str) -> List[dict]:
     return items
 
 
-async def fetch_y360_departments(client, org_id: str) -> List[dict]:
-    deps = await _paginate(client, f'/v1/directory/organizations/{org_id}/departments', org_id)
+async def fetch_y360_departments(org_id: str) -> List[dict]:
+    deps = await _paginate('GET', yandex360.org_path(org_id, 'departments'),
+                           org_id)
     return [{'id': str(d.get('id')), 'name': d.get('name') or '',
              'parent': str(d.get('parentDepartmentId') or ''),
              'note': d.get('note') or ''} for d in deps]
 
 
-async def fetch_y360_users(client, org_id: str) -> List[dict]:
-    emps = await _paginate(client, f'/v1/directory/organizations/{org_id}/users', org_id)
+async def fetch_y360_users(org_id: str) -> List[dict]:
+    emps = await _paginate('GET', yandex360.org_path(org_id, 'users'), org_id)
     return [{'id': str(e.get('id')), 'login': str(e.get('login') or ''),
              'email': _norm_email(e.get('email')),
              'alt_emails': [_norm_email(a) for a in (e.get('altemails') or [])],
@@ -555,12 +571,9 @@ async def fetch_y360_state() -> Dict[str, Any]:
     if not org_id or not token:
         raise RuntimeError("Яндекс 360 не настроен: укажите org_id и OAuth-токен")
 
-    base = yandex360.api_base_url()
-    headers = {'Authorization': f'OAuth {token}', 'Accept': 'application/json'}
-    async with yandex360.make_async_client(base_url=base, headers=headers) as client:
-        departments, employees = await asyncio.gather(
-            fetch_y360_departments(client, org_id),
-            fetch_y360_users(client, org_id))
+    departments, employees = await asyncio.gather(
+        fetch_y360_departments(org_id),
+        fetch_y360_users(org_id))
     return {'departments': departments, 'employees': employees}
 
 
@@ -583,7 +596,7 @@ def _norm_dept_name(name: str) -> str:
 
 
 async def sync_departments(ous: List[dict], y360_state: dict,
-                           client, org_id: str, report: dict,
+                           org_id: str, report: dict,
                            settings_parent_dept: str = '',
                            root_dn: str = '', dry_run: bool = False,
                            write_token: Optional[str] = None):
@@ -598,19 +611,21 @@ async def sync_departments(ous: List[dict], y360_state: dict,
       становятся корневыми департаментами (при наличии parent_department_id из
       настроек вешаются на него).
     - Недостающие подразделения СОЗДАЮТСЯ через DepartmentService_Create
-      (POST /v1/directory/organizations/{org_id}/departments), иерархия
-      сохраняется через parentDepartmentId. Созданные подразделения сразу
-      добавляются в y360_state, чтобы дети и пользователи обрабатывались в
-      этом же проходе. Примечание "ald_pro_dn=<dn>" пишется сразу при
-      создании (и дорабатывается PATCH-ем для найденных по имени).
+      (POST https://api360.yandex.net/directory/v1/org/{orgId}/departments —
+      метод поддерживается только на хосте api360.yandex.net; выбор хоста
+      выполняет yandex360.create_department/request), иерархия сохраняется
+      через parentDepartmentId. Созданные подразделения сразу добавляются в
+      y360_state, чтобы дети и пользователи обрабатывались в этом же проходе.
+      Примечание "ald_pro_dn=<dn>" пишется сразу при создании (и дорабатывается
+      PATCH-ем для найденных по имени).
     - dry_run=True: записи в API не выполняются (ни POST, ни PATCH),
       недостающие подразделения попадают только в план создания
       report['departments']['to_create'].
-    - Если создание невозможно (HTTP 405 — метод недоступен на текущем
-      хосте/токене без права directory:write_departments), подразделение
-      попадает в план создания report['departments']['to_create'] — после
-      ручного заведения в панели администратора следующая синхронизация
-      сопоставит его автоматически.
+    - Если создание невозможно (HTTP 405 — запрос ушёл не на
+      api360.yandex.net либо у токена нет права
+      directory:write_departments), подразделение попадает в план создания
+      report['departments']['to_create'] — после ручного заведения в панели
+      администратора следующая синхронизация сопоставит его автоматически.
     """
     deps = y360_state['departments']
     by_note_dn = {}           # dn из примечания ald_pro_dn= -> id
@@ -627,7 +642,6 @@ async def sync_departments(ous: List[dict], y360_state: dict,
         by_name.setdefault(_norm_dept_name(d['name']), []).append(d['id'])
 
     sem = asyncio.Semaphore(API_CONCURRENCY)
-    dep_url = f'/v1/directory/organizations/{org_id}/departments'
     root_dn_lower = (root_dn or '').strip().lower()
     default_parent = str(settings_parent_dept or '').strip()
     create_failed_perm = False  # POST /departments недоступен (405/403)
@@ -638,9 +652,8 @@ async def sync_departments(ous: List[dict], y360_state: dict,
             return
         try:
             async with sem:
-                await client.patch(f"{dep_url}/{dept_id}",
-                                   params={'org_id': org_id},
-                                   json={'note': 'ald_pro_dn=%s' % dn})
+                await yandex360.update_department(
+                    org_id, dept_id, {'note': 'ald_pro_dn=%s' % dn})
         except Exception:
             pass  # примечание — лишь ускорение сопоставления, не ошибка
 
@@ -710,7 +723,7 @@ async def sync_departments(ous: List[dict], y360_state: dict,
         if not create_failed_perm and not dry_run:
             async with sem:
                 res = await yandex360.create_department(
-                    client, org_id, name=name,
+                    org_id, name=name,
                     parent_department_id=parent_id,
                     note='ald_pro_dn=%s' % dn,
                     token=write_token)
@@ -739,20 +752,23 @@ async def sync_departments(ous: List[dict], y360_state: dict,
                 continue
             status = res.get('status')
             detail = res.get('detail') or ''
+            url_used = res.get('url') or yandex360.primary_base_url()
             if status in (405, 403):
                 # Метод/права недоступны — дальнейшие POST бессмысленны,
                 # складываем всё в план ручного создания
                 create_failed_perm = True
                 report['errors'].append(
-                    "DepartmentService_Create вернул HTTP %s: %s. "
-                    "Метод создания подразделений доступен только при "
-                    "авторизации токеном корпоративного приложения с правом "
-                    "directory:write_departments (обычный OAuth-токен «личного» "
-                    "приложения возвращает 405 MethodNotAllowedError). "
-                    "Укажите токен с правами записи в поле «Токен для записи» "
-                    "(на странице настроек Яндекс 360) и повторите синхронизацию. "
-                    "Оставшиеся подразделения помещены в план создания."
-                    % (status, detail[:120]))
+                    "DepartmentService_Create вернул HTTP %s (%s): %s. "
+                    "Метод создания подразделений поддерживается только на "
+                    "хосте https://api360.yandex.net (запрос отправлялся на %s) "
+                    "и доступен только при авторизации токеном корпоративного "
+                    "приложения с правом directory:write_departments (обычный "
+                    "OAuth-токен «личного» приложения возвращает 405 "
+                    "MethodNotAllowedError). Укажите токен с правами записи в "
+                    "поле «Токен для записи» (на странице настроек Яндекс 360) "
+                    "и повторите синхронизацию. Оставшиеся подразделения "
+                    "помещены в план создания."
+                    % (status, url_used, detail[:120]))
             else:
                 report['errors'].append(
                     "Не удалось создать подразделение '%s' в Яндекс 360 "
@@ -786,19 +802,20 @@ def _apply_created_departments(y360_state: dict, to_create: List[dict]):
 # ---------------------------------------------------------------------------
 
 async def sync_users(users: Dict[str, dict], y360_state: dict,
-                     client, org_id: str, settings: dict, report: dict,
+                     org_id: str, settings: dict, report: dict,
                      write_token: Optional[str] = None):
     """
     Обновить сотрудников Яндекс 360 по данным ALD Pro и заблокировать
     тех, кого больше нет в ALD Pro.
 
     Создание НОВЫХ сотрудников выполняется через UserService_Create
-    (POST /v1/directory/organizations/{org_id}/users) с логином ALD Pro,
-    именем из ALD Pro и назначением подразделения сразу при создании
-    (departmentId). Пароль задаётся заглушкой, письмо-приглашение не
-    рассылается (в текущей версии API флаг sendEmail не поддерживается).
-    Если создание невозможно (HTTP 405 — устаревший хост или отсутствие
-    права directory:write_users), пользователь заносится в план создания
+    (POST /directory/v1/org/{orgId}/users — через yandex360.request(),
+    который для POST всегда использует основной хост api360.yandex.net)
+    с логином ALD Pro, именем из ALD Pro и назначением подразделения сразу
+    при создании (departmentId). Пароль задаётся заглушкой, письмо-приглашение
+    не рассылается (в текущей версии API флаг sendEmail не поддерживается).
+    Если создание невозможно (HTTP 405 — отсутствие права
+    directory:write_users), пользователь заносится в план создания
     report['users']['to_create'] — после заведения учётки следующая
     синхронизация найдёт её по логину/email и применит подразделение.
     Существующие сотрудники проверяются на наличие в ALD Pro и на
@@ -816,7 +833,6 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
 
     domain = (settings.get('email_domain') or '').strip()
     sem = asyncio.Semaphore(API_CONCURRENCY)
-    users_url = f'/v1/directory/organizations/{org_id}/users'
 
     def dept_for_ou(dn: str) -> Optional[str]:
         """Департамент Яндекс 360 для OU ALD Pro.
@@ -840,28 +856,23 @@ async def sync_users(users: Dict[str, dict], y360_state: dict,
 
     async def patch_employee(login: str, payload: dict) -> Optional[str]:
         async with sem:
-            resp = await client.patch(f"{users_url}/{login}",
-                                      params={'org_id': org_id}, json=payload)
-        if resp.status_code != 200:
-            return "HTTP %s: %s" % (resp.status_code, resp.text[:150])
+            res = await yandex360.patch_user(org_id, login, payload,
+                                             token=write_token)
+        if not res.get('success'):
+            return "HTTP %s: %s" % (res.get('status'),
+                                    (res.get('detail') or '')[:150])
         return None
 
     async def create_employee(payload: dict) -> Dict[str, Any]:
-        """Создать сотрудника (UserService_Create)."""
-        headers = None
-        if write_token:
-            headers = {'Authorization': f'OAuth {write_token}'}
+        """Создать сотрудника (UserService_Create).
+
+        POST выполняется через yandex360.create_employee -> request(),
+        который всегда отправляет создающие запросы на основной хост
+        api360.yandex.net (на cloud-api.yandex.net метод недоступен).
+        """
         async with sem:
-            resp = await client.post(users_url, params={'org_id': org_id},
-                                     json=payload, headers=headers)
-        if resp.status_code not in (200, 201):
-            return {'success': False, 'status': resp.status_code,
-                    'detail': resp.text[:300]}
-        body = resp.json() or {}
-        emp = body.get('employee') or body.get('user') or body
-        return {'success': True,
-                'login': str(emp.get('login') or payload.get('login') or ''),
-                'id': str(emp.get('id') or '')}
+            return await yandex360.create_employee(
+                org_id, payload, token=write_token)
 
     processed_logins = set()
     create_api_blocked = False  # POST /users недоступен (405/403)
@@ -1141,25 +1152,25 @@ async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
         y360_state = await fetch_y360_state()
 
         # 3. Запись изменений в Яндекс 360: подразделения создаются через
-        #    DepartmentService_Create, сотрудники — через UserService_Create
-        base = yandex360.api_base_url()
-        headers = {'Authorization': f'OAuth {token}',
-                   'Accept': 'application/json'}
+        #    DepartmentService_Create (ТОЛЬКО хост api360.yandex.net),
+        #    сотрудники — через UserService_Create. Выбор хоста для каждого
+        #    запроса выполняет yandex360.request(): POST всегда уходит на
+        #    api360.yandex.net, остальные методы — на хост из настроек с
+        #    автоматическим повтором на другом хосте при 404/405.
         # Отдельный токен для операций записи (создание подразделений и
         # сотрудников). Если не задан — используется основной oauth_token.
         write_token = (yandex360.get_write_token() or token).strip()
-        async with yandex360.make_async_client(base_url=base, headers=headers) as client:
-            await sync_departments(state['ous'], y360_state, client, org_id,
-                                   report,
-                                   settings.get('parent_department_id', ''),
-                                   root_dn=root_dn, write_token=write_token)
-            # Пользователи OU, подразделения которых отсутствуют в Яндекс 360
-            # (план создания), не должны считаться «несопоставленными»:
-            # добавляем их в состояние с пустым id.
-            _apply_created_departments(y360_state,
-                                       report['departments']['to_create'])
-            await sync_users(state['users'], y360_state, client, org_id,
-                             settings, report, write_token=write_token)
+        await sync_departments(state['ous'], y360_state, org_id,
+                               report,
+                               settings.get('parent_department_id', ''),
+                               root_dn=root_dn, write_token=write_token)
+        # Пользователи OU, подразделения которых отсутствуют в Яндекс 360
+        # (план создания), не должны считаться «несопоставленными»:
+        # добавляем их в состояние с пустым id.
+        _apply_created_departments(y360_state,
+                                   report['departments']['to_create'])
+        await sync_users(state['users'], y360_state, org_id,
+                         settings, report, write_token=write_token)
 
         result['success'] = not report['errors']
         result['error'] = ('; '.join(report['errors'][:5])) or None
@@ -1252,7 +1263,7 @@ async def build_preview() -> Dict[str, Any]:
     tmp_report = {'departments': {'created': 0, 'matched': 0,
                                   'skipped_root': 0, 'to_create': []},
                   'errors': []}
-    await sync_departments(state['ous'], y360_state, None, org_id,
+    await sync_departments(state['ous'], y360_state, org_id,
                            tmp_report, default_parent, root_dn=root_dn,
                            dry_run=True)
     new_departments = tmp_report['departments']['to_create']
@@ -1385,10 +1396,12 @@ async def build_preview() -> Dict[str, Any]:
         'block_missing_users': bool(settings.get('block_missing_users')),
         'creation_via_api': (
             'Подразделения из списка «новые» будут созданы через '
-            'DepartmentService_Create (POST /v1/directory/.../departments), '
-            'сотрудники из списка «к созданию» — через UserService_Create '
-            '(POST /v1/directory/.../users) с логином ALD Pro и паролем-'
-            'заглушкой. Требуется право OAuth directory:write_departments / '
-            'directory:write_users; если API вернёт 405/403, объекты попадут '
-            'в план ручного создания в отчёте синхронизации.'),
+            'DepartmentService_Create (POST https://api360.yandex.net/'
+            'directory/v1/org/{orgId}/departments — метод поддерживается '
+            'только на этом хосте), сотрудники из списка «к созданию» — '
+            'через UserService_Create (POST /directory/v1/org/{orgId}/users) '
+            'с логином ALD Pro и паролем-заглушкой. Требуется право OAuth '
+            'directory:write_departments / directory:write_users; если API '
+            'вернёт 405/403, объекты попадут в план ручного создания '
+            'в отчёте синхронизации.'),
     }

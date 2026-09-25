@@ -132,7 +132,11 @@ class AldProConnectionTest(BaseModel):
 
 
 class Yandex360Settings(BaseModel):
-    api_host: str = "cloud-api.yandex.net"
+    # основной хост API Яндекс 360: создание подразделений
+    # (DepartmentService_Create) поддерживается только на api360.yandex.net
+    api_host: str = "api360.yandex.net"
+    # дополнительный хост (не все методы); пусто — не использовать
+    api_host_alt: str = "cloud-api.yandex.net"
     org_id: str = ""
     oauth_token: str = ""
     oauth_token_write: str = ""   # токен для операций записи (создание департаментов/сотрудников)
@@ -140,7 +144,8 @@ class Yandex360Settings(BaseModel):
 
 
 class Yandex360ConnectionTest(BaseModel):
-    api_host: str = "cloud-api.yandex.net"
+    api_host: str = "api360.yandex.net"
+    api_host_alt: Optional[str] = None
     org_id: str = ""
     oauth_token: str = ""
     oauth_token_write: str = ""
@@ -1085,7 +1090,8 @@ def api_save_yandex360_settings(settings: Yandex360Settings):
     """Сохранить настройки авторизации в API Яндекс 360."""
     if yandex360.save_settings(
         settings.api_host, settings.org_id, settings.oauth_token,
-        settings.client_id, oauth_token_write=settings.oauth_token_write
+        settings.client_id, oauth_token_write=settings.oauth_token_write,
+        api_host_alt=settings.api_host_alt
     ):
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="Ошибка сохранения настроек")
@@ -1096,9 +1102,12 @@ async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
     """Проверить подключение к API Яндекс 360 (валидация OAuth-токена и org_id).
 
     Дополнительно проверяется токен для операций записи (создание
-    подразделений/сотрудников) — отдельным запросом DepartmentService_Create
-    с тестовым именем, которое сразу удаляется недоступно; при отсутствии
-    прав возвращается понятная ошибка вместо 405 во время синхронизации.
+    подразделений/сотрудников) — запросом DepartmentService_Create
+    (POST /directory/v1/org/{orgId}/departments) с тестовым именем.
+    ВАЖНО: этот метод поддерживается только на хосте api360.yandex.net —
+    выбор хоста выполняет yandex360.create_department()/request().
+    При отсутствии прав возвращается понятная ошибка вместо 405 во время
+    синхронизации.
     """
     result = await yandex360.test_connection(
         test_data.api_host, test_data.org_id, test_data.oauth_token
@@ -1109,42 +1118,44 @@ async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
         yandex360.save_settings(
             test_data.api_host, test_data.org_id, test_data.oauth_token,
             cur.get('client_id', ''),
-            oauth_token_write=test_data.oauth_token_write or ''
+            oauth_token_write=test_data.oauth_token_write or '',
+            api_host_alt=(test_data.api_host_alt
+                          if test_data.api_host_alt is not None
+                          else cur.get('api_host_alt', ''))
         )
-        # Проверка токена записи (если задан отдельный или основной токен)
+        # Проверка токена записи (если задан отдельный или основной токен).
+        # Создание подразделения всегда проверяется на основном хосте
+        # api360.yandex.net (только там доступен DepartmentService_Create).
         write_token = (test_data.oauth_token_write or
                        test_data.oauth_token or '').strip()
         if write_token and test_data.org_id:
             try:
-                import httpx
-                base = yandex360.API_HOSTS.get(
-                    test_data.api_host, 'https://cloud-api.yandex.net')
-                async with httpx.AsyncClient(base_url=base, timeout=30,
-                                             verify=False) as wclient:
-                    wres = await yandex360.create_department(
-                        wclient, test_data.org_id,
-                        name='__admin_helper_write_test__',
-                        token=write_token)
-                    if wres.get('success'):
-                        result['write_access'] = True
-                        new_id = wres.get('id')
-                        # удаляем тестовое подразделение (если доступно)
-                        if new_id:
-                            try:
-                                await wclient.delete(
-                                    f"/v1/directory/organizations/"
-                                    f"{test_data.org_id}/departments/{new_id}",
-                                    params={'org_id': test_data.org_id},
-                                    headers={'Authorization':
-                                             f'OAuth {write_token}'})
-                            except Exception:
-                                pass
-                    else:
-                        result['write_access'] = False
-                        result['write_error'] = (
-                            "Токен записи не пройден (HTTP %s): %s"
-                            % (wres.get('status'),
-                               (wres.get('detail') or '')[:200]))
+                wres = await yandex360.create_department(
+                    test_data.org_id,
+                    name='__admin_helper_write_test__',
+                    token=write_token)
+                if wres.get('success'):
+                    result['write_access'] = True
+                    new_id = wres.get('id')
+                    # удаляем тестовое подразделение (если доступно)
+                    if new_id:
+                        try:
+                            await yandex360.request(
+                                'DELETE',
+                                yandex360.org_path(test_data.org_id,
+                                                   f'departments/{new_id}'),
+                                params={'org_id': test_data.org_id},
+                                headers={'Authorization':
+                                         f'OAuth {write_token}'})
+                        except Exception:
+                            pass
+                else:
+                    result['write_access'] = False
+                    result['write_error'] = (
+                        "Токен записи не пройден (HTTP %s, %s): %s"
+                        % (wres.get('status'),
+                           wres.get('url') or yandex360.primary_base_url(),
+                           (wres.get('detail') or '')[:200]))
             except Exception as e:
                 result['write_access'] = None
                 result['write_error'] = str(e)[:200]
