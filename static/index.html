@@ -145,51 +145,26 @@
   <div id="y360SyncView" class="hidden">
     <div class="header">
       <a id="y360SyncBackBtn" class="back" href="#">&larr; Назад к IPAM</a>
-      <h2>Яндекс 360 — выгрузка пользователей из ALD Pro</h2>
-      <div class="toolbar">
-        <button id="y360SyncRefreshBtn">Обновить статус</button>
-        <button id="y360SyncPreviewBtn">Предпросмотр изменений</button>
-        <button id="y360SyncRunBtn">Запустить синхронизацию</button>
-        <button id="y360SyncResetMapBtn">Сбросить кэш соответствий</button>
-      </div>
+      <h2>Яндекс 360 — синхронизация с ALD Pro</h2>
     </div>
     <div style="padding: 15px;">
-      <h3>Настройки выгрузки</h3>
-      <label>Базовый OU ALD Pro (DN), от которого строится дерево и выгружается структура</label>
+      <h3>Дерево ALD Pro</h3>
+      <label>Базовый OU ALD Pro (DN), от которого строится дерево</label>
       <div style="display:flex; gap:8px;">
-        <input id="y360SyncRootOuInput" type="text" placeholder="OU=Company,DC=corp,DC=local" style="flex: 1;">
+        <input id="y360SyncRootOuInput" type="text" placeholder="OU=rosnedra,DC=nedra,DC=net" style="flex: 1;">
         <button id="y360AldTreeBtn">Построить дерево ALD Pro</button>
+        <button id="y360SyncSaveBtn">Сохранить</button>
       </div>
       <small style="color:#888;">Дерево строится по API ALD Pro (subtree базового OU + пользователи каждого OU). Рядом с каждым узлом указываются id (порядковый номер в дереве) и childID (id родителя; для корневого OU childID = 0).</small>
-      <label>ID родительского департамента Яндекс 360 для корневого OU (необязательно)</label>
-      <input id="y360SyncParentDeptInput" type="text" placeholder="например, 1000001">
-      <label>Домен корпоративной почты Яндекс 360 (для новых учетных записей)</label>
-      <input id="y360SyncEmailDomainInput" type="text" placeholder="company.ru">
-      <label>Интервал автоматической синхронизации (минуты)</label>
-      <input id="y360SyncIntervalInput" type="number" min="1" step="1">
-      <label style="display:flex; align-items:center; gap:6px;">
-        <input id="y360SyncBlockMissingInput" type="checkbox" style="width:auto;">
-        Блокировать в Яндекс 360 сотрудников, отсутствующих в ALD Pro
-      </label>
-      <button id="y360SyncSaveBtn">Сохранить настройки синхронизации</button>
 
-      <h3>Дерево подразделений и пользователей ALD Pro</h3>
+      <h3>Результат построения дерева</h3>
       <div class="toolbar" style="margin-bottom:6px;">
         <button id="y360AldTreeViewModeText" class="y360-ald-view-active">Текстовое представление</button>
         <button id="y360AldTreeViewModeNested">Дерево (HTML)</button>
       </div>
       <div id="y360AldTreeStatus" style="color:#666; margin-bottom:6px;"></div>
-      <pre id="y360AldTreeText" class="y360-tree-box">Нажмите «Построить дерево ALD Pro» — здесь появится структура подразделений от базового OU с пользователями.</pre>
+      <pre id="y360AldTreeText" class="y360-tree-box">Укажите базовый OU и нажмите «Построить дерево ALD Pro» — здесь появится структура подразделений от базового OU с пользователями.</pre>
       <div id="y360AldTreeHtml" class="hidden"></div>
-
-      <h3>Статус синхронизации</h3>
-      <div id="y360SyncStatus" style="background:#f6f8fa; border:1px solid #ddd; padding:10px; border-radius:6px; white-space:pre-wrap;">Загрузка...</div>
-
-      <h3>Последний отчёт</h3>
-      <div id="y360SyncReport" style="background:#f6f8fa; border:1px solid #ddd; padding:10px; border-radius:6px; white-space:pre-wrap;">Нет данных</div>
-
-      <h3 id="y360PreviewTitle" class="hidden">Предпросмотр изменений (без записи в Яндекс 360)</h3>
-      <div id="y360PreviewResult" class="hidden" style="background:#fff8e1; border:1px solid #ddd; padding:10px; border-radius:6px; white-space:pre-wrap;"></div>
     </div>
   </div>
 </div>

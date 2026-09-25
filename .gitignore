@@ -1,6 +1,6 @@
-# Python compiled files
+# Compiled/Binary files
 __pycache__/
 *.pyc
 
-# Database files
-*.db
+# Dependency directories
+venv/
