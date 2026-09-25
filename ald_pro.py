@@ -168,6 +168,52 @@ def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Общий (переиспользуемый) клиент ALD Pro
+#
+# Нужен для обхода больших поддеревьев OU: авторизация выполняется один раз,
+# а не на каждый запрос (раньше на каждое подразделение создавался новый
+# клиент и выполнялся вход в ALD Pro, из-за чего обход был очень медленным).
+# ---------------------------------------------------------------------------
+
+_shared_client = None
+
+
+def _client_alive(client) -> bool:
+    """Проверить, что общий клиент ещё не закрыт."""
+    try:
+        return client is not None and not client.is_closed
+    except Exception:
+        return False
+
+
+async def get_shared_client(force_new: bool = False):
+    """Вернуть переиспользуемый авторизованный клиент ALD Pro (или None)."""
+    global _shared_client
+    if _client_alive(_shared_client) and not force_new:
+        return _shared_client
+    if _shared_client is not None:
+        try:
+            await _shared_client.aclose()
+        except Exception:
+            pass
+        _shared_client = None
+    client = await _get_authenticated_client()
+    _shared_client = client
+    return client
+
+
+async def close_shared_client():
+    """Закрыть переиспользуемый клиент ALD Pro."""
+    global _shared_client
+    if _shared_client is not None:
+        try:
+            await _shared_client.aclose()
+        except Exception:
+            pass
+        _shared_client = None
+
+
 async def _fetch_children(client: httpx.AsyncClient, ou_dn: str) -> list:
     """Получить список дочерних подразделений (раздел 7.9 документации ALD Pro).
 
@@ -185,6 +231,54 @@ async def _fetch_children(client: httpx.AsyncClient, ou_dn: str) -> list:
         logger.warning(f"ALD Pro вернул success=false для детей {ou_dn}: {data}")
         return []
     return data.get('data', []) or []
+
+
+async def fetch_child_units(ou_dn: str, client=None) -> list:
+    """Дочерние OU подразделения в упрощённом виде [{'dn','name','parent'}].
+
+    В отличие от get_organizational_units здесь НЕ используется флаг
+    organizationunitlistitem_is_leaf: обходятся все узлы подряд, поэтому в
+    поддерево попадают и те подразделения, у которых ALD Pro ошибочно выставил
+    is_leaf=true (из-за чего часть OU раньше не получалась).
+
+    Args:
+        ou_dn: DN родительского подразделения.
+        client: переиспользуемый клиент (см. get_shared_client); если не
+                передан — создаётся временный.
+
+    Returns:
+        Список словарей {'dn', 'name', 'parent'}.
+    """
+    own_client = client is None
+    if own_client:
+        client = await _get_authenticated_client()
+        if not client:
+            logger.warning("ALD Pro не настроен — дочерние OU недоступны")
+            return []
+    try:
+        items = await _fetch_children(client, unquote(ou_dn))
+    finally:
+        if own_client:
+            await client.aclose()
+
+    result = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        inner = item.get('organizationunitlistitem')
+        src = inner if isinstance(inner, dict) else item
+        dn = (src.get('organizationunitlistitem_dn')
+              or src.get('organizationunit_dn') or src.get('dn') or '')
+        if not dn:
+            continue
+        name = (src.get('organizationunitlistitem_display_name')
+                or src.get('organizationunit_display_name')
+                or src.get('organizationunitlistitem_ou')
+                or src.get('organizationunit_ou') or '')
+        parent = (src.get('organizationunitlistitem_parent_dn')
+                  or src.get('organizationunit_parent_dn') or unquote(ou_dn))
+        result.append({'dn': unquote(dn), 'name': name, 'parent': parent})
+    return result
 
 
 async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
@@ -443,7 +537,7 @@ def build_ou_tree(units: list) -> list:
     return root_units
 
 
-async def get_organizational_unit_users(ou_dn: str) -> Dict[str, Any]:
+async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, Any]:
     """
     Получить список пользователей подразделения.
     
@@ -451,8 +545,13 @@ async def get_organizational_unit_users(ou_dn: str) -> Dict[str, Any]:
     
     Args:
         ou_dn: DN организационного подразделения (URL-encoded)
+        client: переиспользуемый авторизованный клиент (см.
+                get_shared_client); если не передан — создаётся
+                временный (с отдельной авторизацией).
     """
-    client = await _get_authenticated_client()
+    own_client = client is None
+    if own_client:
+        client = await _get_authenticated_client()
     if not client:
         return {'success': False, 'detail': 'ALD Pro не настроен'}
     
@@ -472,4 +571,5 @@ async def get_organizational_unit_users(ou_dn: str) -> Dict[str, Any]:
         logger.error(f"Ошибка при получении пользователей подразделения ALD Pro: {e}")
         return {'success': False, 'detail': str(e)}
     finally:
-        await client.aclose()
+        if own_client:
+            await client.aclose()
