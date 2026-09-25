@@ -585,7 +585,15 @@ async def _paginate(method: str, path: str, org_id: str,
                 % (resp.status_code, method, resp.request.url,
                    resp.headers.get('allow', '-'), hint))
         body = resp.json() or {}
-        page = body.get('items') or []
+        # DepartmentService_List отдаёт список в поле 'departments',
+        # UserService_List — в 'users'; универсальные варианты — на всякий
+        # случай. Поле 'items' у этих методов отсутствует (раньше из-за
+        # этого списки всегда приходили пустыми).
+        page = []
+        for key in ('departments', 'users', 'items'):
+            if isinstance(body.get(key), list):
+                page = body[key]
+                break
         items.extend(page)
         total = int(body.get('total') or 0)
         if not page:
@@ -605,6 +613,10 @@ async def fetch_y360_departments(org_id: str) -> List[dict]:
                            org_id)
     return [{'id': str(d.get('id')), 'name': d.get('name') or '',
              'parent': str(d.get('parentDepartmentId') or ''),
+             # сырое числовое значение родителя (для распознавания корневых
+             # подразделений, у которых parentDepartmentId == id организации)
+             'parent_department_id_raw': _to_int_id(
+                 d.get('parentDepartmentId')),
              'note': d.get('note') or ''} for d in deps]
 
 
@@ -650,6 +662,29 @@ def _norm_dept_name(name: str) -> str:
                   .replace('\u00bb', '')).strip().lower()
 
 
+def _to_int_id(value) -> Optional[int]:
+    """Числовой идентификатор (подразделения/организации) либо None."""
+    try:
+        v = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def _dept_parent_candidates(dept: dict, org_root_pid: Optional[int]):
+    """Возможные значения parentDepartmentId департамента Яндекс 360.
+
+    У корневых подразделений в ответе DepartmentService_List поле
+    parentDepartmentId может отсутствовать либо равняться id самой
+    организации — учитываем оба варианта при сопоставлении по имени."""
+    cands = {str(dept.get('parent') or '')}
+    pid_raw = dept.get('parent_department_id_raw')
+    if pid_raw is not None and org_root_pid is not None \
+            and pid_raw == org_root_pid:
+        cands.add('')
+    return cands
+
+
 async def sync_departments(ous: List[dict], y360_state: dict,
                            org_id: str, report: dict,
                            settings_parent_dept: str = '',
@@ -683,6 +718,7 @@ async def sync_departments(ous: List[dict], y360_state: dict,
       администратора следующая синхронизация сопоставит его автоматически.
     """
     deps = y360_state['departments']
+    org_root_pid = _to_int_id(org_id)  # id организации = родитель корневых
     by_note_dn = {}           # dn из примечания ald_pro_dn= -> id
     by_parent_name = {}       # (parent_id, имя) -> id
     by_name = {}              # имя -> [id]
@@ -690,15 +726,23 @@ async def sync_departments(ous: List[dict], y360_state: dict,
         m = NOTE_DN_RE.search(_dept_note(d))
         if m:
             by_note_dn[m.group(1).lower()] = d['id']
-        key = (d['parent'], _norm_dept_name(d['name']))
-        by_parent_name.setdefault(key, d['id'])
-        if key[0] == '':
-            by_parent_name.setdefault(('', _norm_dept_name(d['name'])), d['id'])
+        for pcand in _dept_parent_candidates(d, org_root_pid):
+            by_parent_name.setdefault((pcand, _norm_dept_name(d['name'])),
+                                      d['id'])
         by_name.setdefault(_norm_dept_name(d['name']), []).append(d['id'])
 
     sem = asyncio.Semaphore(API_CONCURRENCY)
     root_dn_lower = (root_dn or '').strip().lower()
     default_parent = str(settings_parent_dept or '').strip()
+    # parentDepartmentId из настроек обязан быть числовым — Яндекс 360
+    # вернёт HTTP 400 "Ошибка проверки поля parentDepartmentId" иначе
+    if default_parent and _to_int_id(default_parent) is None:
+        report['errors'].append(
+            "Некорректный родительский департамент в настройках синхронизации "
+            "(parent_department_id=%r): идентификатор должен быть числовым. "
+            "Поле проигнорировано, корневые подразделения будут созданы "
+            "непосредственно в организации." % default_parent)
+        default_parent = ''
     create_failed_perm = False  # POST /departments недоступен (405/403)
 
     async def try_patch_note(dept_id: str, dn: str) -> None:
@@ -774,12 +818,17 @@ async def sync_departments(ous: List[dict], y360_state: dict,
         if (not ou['parent'] or ou['parent'].lower() == root_dn_lower
                 or parent_id is None):
             parent_id = default_parent or None
+        # ВАЖНО: DepartmentService_Create требует обязательное числовое поле
+        # parentDepartmentId; null/отсутствие дают HTTP 400 "Ошибка проверки
+        # поля parentDepartmentId". Для корневого подразделения родителем
+        # является сама организация — передаём org_id.
+        effective_parent = parent_id or org_id
 
         if not create_failed_perm and not dry_run:
             async with sem:
                 res = await yandex360.create_department(
                     org_id, name=name,
-                    parent_department_id=parent_id,
+                    parent_department_id=effective_parent,
                     note='ald_pro_dn=%s' % dn,
                     token=write_token)
             if res.get('success'):
@@ -808,7 +857,21 @@ async def sync_departments(ous: List[dict], y360_state: dict,
             status = res.get('status')
             detail = res.get('detail') or ''
             url_used = res.get('url') or yandex360.primary_base_url()
-            if status in (405, 403):
+            if status == 400 and 'parentDepartmentId' in detail:
+                # Яндекс 360 отверг родителя: поле обязательно и должно быть
+                # числовым id существующего подразделения (или id организации)
+                report['errors'].append(
+                    "Не удалось создать подразделение '%s': Яндекс 360 отклонил "
+                    "значение parentDepartmentId=%r (HTTP 400). Идентификатор "
+                    "родительского подразделения должен быть числовым и "
+                    "принадлежать организации %s. Проверьте значение поля "
+                    "'Родительское подразделение' в настройках синхронизации "
+                    "(id можно взять из панели администратора Яндекс 360 или "
+                    "оставить пустым — тогда подразделения создадутся в "
+                    "корне организации). Ответ API: %s"
+                    % (name, parent_id or default_parent or org_id, org_id,
+                       detail[:200]))
+            elif status in (405, 403):
                 # Метод/права недоступны — дальнейшие POST бессмысленны,
                 # складываем всё в план ручного создания
                 create_failed_perm = True
@@ -1313,6 +1376,7 @@ async def build_preview() -> Dict[str, Any]:
 
     root_dn_lower = root_dn.lower()
     default_parent = str(settings.get('parent_department_id') or '').strip()
+    org_root_pid = _to_int_id(org_id)
 
     # План создания подразделений считаем той же процедурой, что и реальная
     # синхронизация, но в режиме dry_run (без POST/PATCH к API): сопоставления
@@ -1336,8 +1400,14 @@ async def build_preview() -> Dict[str, Any]:
         m = NOTE_DN_RE.search(d.get('note') or '')
         if m:
             dept_by_note[m.group(1).lower()] = d['id']
-        key = (d['parent'], _norm_dept_name(d['name']))
-        by_parent_name.setdefault(key, d['id'])
+        by_parent_name.setdefault((d['parent'], _norm_dept_name(d['name'])),
+                                  d['id'])
+        # корневые департаменты: parentDepartmentId может равняться id
+        # организации — регистрируем и под пустым родителем
+        for pcand in _dept_parent_candidates(d, org_root_pid):
+            if pcand != d['parent']:
+                by_parent_name.setdefault((pcand, _norm_dept_name(d['name'])),
+                                          d['id'])
         by_name.setdefault(_norm_dept_name(d['name']), []).append(d['id'])
     for ou in state['ous']:
         ou_by_dn[ou['dn'].lower()] = ou
