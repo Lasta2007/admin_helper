@@ -1089,9 +1089,9 @@ function showAldTreeResult(data) {
   const statusEl = document.getElementById('y360AldTreeStatus');
   const st = (data.json && data.json.stats) || {};
   statusEl.textContent = `Базовый OU: ${st.base_dn || ''} · ` +
-    `подразделений: ${st.departments || 0} · ` +
+    `подразделений: ${st.departments || 0} (корневых: ${st.root_departments || 0}) · ` +
     `пользователей: ${st.users_total || 0}` +
-    (st.emails_generated ? ` (почта сгенерирована из логина: ${st.emails_generated})` : '');
+    (st.users_without_department ? ` · без подразделения: ${st.users_without_department}` : '');
   renderAldTreeHtml(document.getElementById('y360AldTreeHtml'),
                     (data.json && data.json.tree) || []);
 }
