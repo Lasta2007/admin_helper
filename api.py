@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from database import (
@@ -1284,6 +1285,39 @@ def api_departments_sync_status():
     st['interval_minutes'] = sync360_new.get_ald_sync_settings().get(
         'sync_interval_minutes')
     return st
+
+
+# ---------------------------------------------------------------------------
+# ВЫГРУЗКА структуры подразделений Яндекс 360 (с parentID).
+# Только официальный метод DepartmentService_List:
+#   GET https://api360.yandex.net/directory/v1/org/{orgId}/departments
+# Для корневых подразделений parentID = 0 (родитель — сама организация).
+# ---------------------------------------------------------------------------
+
+@router.get("/yandex360/departments/export")
+async def api_departments_export(
+        fmt: str = Query('json', description="Формат файла: json | csv | text"),
+        download: int = Query(0, description="1 — отдать файл на скачивание")):
+    """Выгрузить структуру подразделений Яндекс 360 с указанием parentID."""
+    fmt_norm = (fmt or 'json').strip().lower()
+    if fmt_norm not in ('json', 'csv', 'text'):
+        raise HTTPException(status_code=400,
+                            detail="Некорректный fmt — допускается json, csv или text")
+    try:
+        result = await sync360_new.export_y360_departments(fmt_norm)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if download:
+        media = {'json': 'application/json',
+                 'csv': 'text/csv',
+                 'text': 'text/plain'}[fmt_norm]
+        return Response(
+            content=result['content'].encode('utf-8'),
+            media_type=f'{media}; charset=utf-8',
+            headers={'Content-Disposition':
+                     f'attachment; filename="{result["filename"]}"'})
+    # для отображения в интерфейсе: без тяжёлого дерева в ответе
+    return {k: v for k, v in result.items() if k != 'tree'}
 
 
 # --- управление фоновой задачей синхронизации структуры ---------------------

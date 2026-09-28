@@ -1280,3 +1280,71 @@ async function loadY360DeptSyncStatus() {
       `Фон: ${s.background_enabled ? 'вкл' : 'выкл'}, интервал ${s.interval_minutes || 60} мин.`;
   } catch (e) { /* не критично */ }
 }
+
+
+// ---------------------------------------------------------------------------
+// Яндекс 360: ВЫГРУЗКА структуры подразделений (с parentID)
+// Только официальный метод DepartmentService_List:
+//   GET /directory/v1/org/{orgId}/departments
+// Эндпоинт модуля: GET /api/yandex360/departments/export?fmt=json|csv|text
+// ---------------------------------------------------------------------------
+
+let y360ExportData = null;   // последний ответ /departments/export
+
+function y360RenderExport(data) {
+  const rows = data.rows || [];
+  const st = data.stats || {};
+  const lines = [];
+  lines.push(`Выгрузка структуры подразделений Яндекс 360 (orgId=${data.org_id})`);
+  lines.push(`Подразделений: ${data.count || rows.length}, корневых: ${st.root_departments || 0}, ` +
+             `сотрудников: ${st.users_total || 0}`);
+  lines.push('Формат строк: id=<ID подразделения>, parentID=<ID родителя; 0 — родитель = организация>');
+  lines.push('-'.repeat(64));
+  rows.forEach(r => {
+    const indent = '  '.repeat((r.depth || 1) - 1);
+    lines.push(`${indent}id=${r.id}, parentID=${r.parentID}, name="${r.name}" ` +
+               `(путь: ${r.path}; дочерних: ${r.childrenCount})`);
+  });
+  if (!rows.length) lines.push('Подразделений нет.');
+  return lines.join('\n');
+}
+
+document.getElementById('y360DeptExportBtn').onclick = async () => {
+  const btn = document.getElementById('y360DeptExportBtn');
+  const statusEl = document.getElementById('y360ExportStatus');
+  const textEl = document.getElementById('y360ExportText');
+  const dlBtn = document.getElementById('y360DeptExportDownloadBtn');
+  const fmt = document.getElementById('y360ExportFormatSelect').value || 'json';
+  btn.disabled = true;
+  btn.textContent = 'Выгрузка...';
+  dlBtn.disabled = true;
+  statusEl.textContent = 'Читаем подразделения Яндекс 360 (DepartmentService_List)...';
+  try {
+    const res = await fetch('/api/yandex360/departments/export?fmt=' + encodeURIComponent(fmt));
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      textEl.textContent = 'Ошибка: ' + (data.detail || res.status);
+      return;
+    }
+    y360ExportData = data;
+    textEl.textContent = y360RenderExport(data);
+    statusEl.textContent = `Выгружено подразделений: ${data.count}. ` +
+      `Файл: ${data.filename} (${(data.format || '').toUpperCase()}). ` +
+      'Нажмите «Скачать файл» для сохранения.';
+    dlBtn.disabled = false;
+  } catch (e) {
+    statusEl.textContent = 'Ошибка запроса выгрузки: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Выгрузить структуру Яндекс 360';
+  }
+};
+
+document.getElementById('y360DeptExportDownloadBtn').onclick = async () => {
+  if (!y360ExportData) return;
+  const fmt = y360ExportData.format || 'json';
+  // скачивание через эндпоинт с download=1 (Content-Disposition: attachment)
+  window.location.href = '/api/yandex360/departments/export?fmt=' +
+    encodeURIComponent(fmt) + '&download=1';
+};
