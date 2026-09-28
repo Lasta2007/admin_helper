@@ -930,24 +930,93 @@ def _ald_flatten_nodes(tree: Dict[str, Any]) -> List[dict]:
 
 def _y360_parent_id_for(node: dict, roots_ids: set, dept_by_id: dict,
                        mapping: Dict[str, str], org_id: str,
-                       configured_parent: str) -> Optional[int]:
+                       configured_parent: str,
+                       y360_root_id: Optional[int] = None) -> Optional[int]:
     """Вычислить parentDepartmentId для OU по его месту в дереве ALD Pro.
 
-    Корневые OU: настроенный родитель (parent_department_id) или сама
-    организация (orgId). Некорневые: id подразделения-родителя из маппинга;
-    если родителя ещё нет в 360 (не должен случаться при обходе сверху вниз)
-    — fallback на root-родитель.
+    Корневые OU: настроенный родитель (parent_department_id); если он не
+    задан — автоматически определённое корневое подразделение организации
+    (y360_root_id, см. find_y360_root_department). ВАЖНО: id самой
+    организации (orgId) сервером DepartmentService_Create как родитель НЕ
+    принимается (HTTP 400 про обязательность parentId), поэтому orgId из
+    этой функции больше не возвращается.
+
+    Некорневые: id подразделения-родителя из маппинга; если родителя ещё
+    нет в 360 (не должен случаться при обходе сверху вниз) — fallback на
+    root-родитель (настроенный или корневое подразделение 360).
     """
-    if node['childID'] == 0 or node['dn'].lower() in roots_ids:
+    def _root_fallback() -> Optional[int]:
         pid = _to_int(configured_parent)
-        return pid if pid is not None else _to_int(org_id)
+        if pid is not None:
+            return pid
+        return y360_root_id
+
+    if node['childID'] == 0 or node['dn'].lower() in roots_ids:
+        return _root_fallback()
     parent_dn = node.get('parent_dn') or ''
     pid = _to_int(mapping.get(parent_dn.lower()))
-    if pid is None:
-        pid = _to_int(configured_parent)
-    if pid is None:
-        pid = _to_int(org_id)
+    # привязка/создание родителя ещё не выполнено (planned id недоступен
+    # на этапе плана) — не возвращаем orgId, а уходим в root-fallback
+    if pid is None or pid not in dept_by_id:
+        pid = _root_fallback()
     return pid
+
+
+def find_y360_root_department(departments: List[dict], org_id) -> Optional[int]:
+    """Определить id КОРНЕВОГО подразделения организации Яндекс 360.
+
+    В реальном API 360 (DepartmentService_List) у подразделения верхнего
+    уровня поле parentDepartmentId либо отсутствует, либо равно 0, либо
+    совпадает с id самой организации; при этом само оно не является
+    организацией. Этот id и нужно передавать как parentDepartmentId в
+    DepartmentService_Create для корневых элементов структуры.
+
+    Важно: id организации (orgId) НЕ принимается сервером в качестве
+    родителя — POST /departments с parentDepartmentId == orgId возвращает
+    HTTP 400 вида «Ошибка проверки поля "parentId": Это поле является
+    обязательным» (родитель по такому id не находится).
+
+    Возвращает None, если единственное/корневое подразделение найти не
+    удалось (например, структура в 360 пуста).
+    """
+    org = _to_int(org_id)
+    by_id = {_to_int(d.get('id')): d for d in departments
+             if _to_int(d.get('id')) is not None}
+    candidates = []
+    for did, d in by_id.items():
+        if did == org:
+            continue
+        pid = _to_int(d.get('parentDepartmentId'))
+        if pid is None or pid == 0 or pid == org:
+            candidates.append(did)
+    if len(candidates) == 1:
+        return candidates[0]
+    # несколько подразделений верхнего уровня — корнем считаем то, у которого
+    # parentDepartmentId вообще отсутствует/0 (наиболее вероятный признак
+    # подразделения, соответствующего всей организации); если таких нет или
+    # их несколько — корень определить нельзя (нужна настройка вручную)
+    strict = [did for did in candidates
+              if _to_int(by_id[did].get('parentDepartmentId')) in (None, 0)]
+    if len(strict) == 1:
+        return strict[0]
+    return None
+
+
+def y360_parent_exists(parent_id: Optional[int], dept_by_id: dict,
+                       org_id) -> bool:
+    """Существует ли ожидаемый родитель-подразделение в каталоге 360.
+
+    id организации (orgId) родителем быть не может — см.
+    find_y360_root_department(). Возвращает False для None и для orgId,
+    чтобы синхронизация заранее сообщала о некорректной настройке, а не
+    получала непонятный HTTP 400 от Yandex.
+    """
+    if parent_id is None:
+        return False
+    org = _to_int(org_id)
+    if parent_id == org:
+        return False
+    return parent_id in dept_by_id
 
 
 def _build_name_index(departments: List[dict]) -> Dict[Tuple[int, str], int]:
@@ -991,6 +1060,9 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
     mapped_ids = {int(v) for v in mapping.values() if str(v).isdigit()}
     name_index = _build_name_index(y360_deps)
     roots_ids = {n['dn'].lower() for n in (ald_tree.get('roots') or [])}
+    # корневое подразделение организации (автоматически, если родитель не
+    # настроен вручную); orgId родителем в API 360 не является
+    y360_root_id = find_y360_root_department(y360_deps, org_id)
 
     actions: List[dict] = []
     planned: Dict[str, str] = {}                   # dn(lower) -> id (сущ./план)
@@ -1006,7 +1078,8 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
         name = (node['name'] or '').strip() or dn.split(',')[0]
         expected_parent = _y360_parent_id_for(node, roots_ids, dept_by_id,
                                               {**mapping, **planned}, org_id,
-                                              configured_parent)
+                                              configured_parent,
+                                              y360_root_id)
         dept_id = mapping.get(key) or planned.get(key)
         dept = dept_by_id.get(_to_int(dept_id)) if dept_id else None
 
@@ -1046,6 +1119,13 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
                                       'parentDepartmentId'})
             stats['errors'] += 1
             continue
+        if not y360_parent_exists(expected_parent, dept_by_id, org_id):
+            actions.append({'type': 'error', 'dn': dn, 'name': name,
+                            'detail': ('Родитель id=%s не найден среди '
+                                       'подразделений Яндекс 360'
+                                       % expected_parent)})
+            stats['errors'] += 1
+            continue
 
         actions.append({'type': 'create', 'dn': dn, 'name': name,
                         'parentDepartmentId': expected_parent})
@@ -1075,6 +1155,7 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
         'ald_base_dn': ald_tree.get('base_dn'),
         'ald_stats': ald_tree.get('stats'),
         'y360_departments_total': len(y360_deps),
+        'y360_root_department_id': y360_root_id,
         'org_id': org_id,
     }
 
@@ -1115,9 +1196,24 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
         name_index = _build_name_index(y360_deps)
         roots_ids = {n['dn'].lower() for n in (ald_tree.get('roots') or [])}
         configured_parent = str(settings.get('parent_department_id') or '').strip()
+        # корневое подразделение организации Яндекс 360 (родитель для
+        # корневых OU); orgId родителем в DepartmentService_Create не
+        # является — сервер отвечает HTTP 400 про обязательность parentId
+        y360_root_id = find_y360_root_department(y360_deps, org_id)
+        if not configured_parent and y360_root_id is None:
+            raise RuntimeError(
+                'Не определён родительский элемент структуры Яндекс 360: '
+                'не задан «Родительский департамент» в настройках и не '
+                'удалось автоматически найти корневое подразделение '
+                'организации (id самой организации родителем быть не может). '
+                'Укажите id подразделения-родителя в настройках синхронизации.')
 
         nodes = [n for n in _ald_flatten_nodes(ald_tree)
                  if not n.get('_is_orphan_service')]
+        # узлы, чей предок не был создан/привязан (ошибка выше по дереву) —
+        # их потомков не обрабатываем, чтобы не плодить записи с неверным
+        # родителем
+        blocked_dns: set = set()
 
         # --- удаления из 360 вручную: чистим устаревший маппинг -------------
         live_dns = {n['dn'].lower() for n in nodes}
@@ -1136,13 +1232,32 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
             dn = node['dn']
             key = dn.lower()
             name = (node['name'] or '').strip() or dn.split(',')[0]
+            parent_dn_l = (node.get('parent_dn') or '').lower()
+            if parent_dn_l and parent_dn_l in blocked_dns:
+                summary['errors'] += 1
+                blocked_dns.add(key)
+                results.append({'type': 'error', 'dn': dn, 'name': name,
+                                'success': False,
+                                'detail': 'Пропущено: родитель не синхронизирован'})
+                continue
             expected_parent = _y360_parent_id_for(
-                node, roots_ids, dept_by_id, mapping, org_id, configured_parent)
+                node, roots_ids, dept_by_id, mapping, org_id, configured_parent,
+                y360_root_id)
             if expected_parent is None:
                 summary['errors'] += 1
+                blocked_dns.add(key)
                 results.append({'type': 'error', 'dn': dn, 'name': name,
                                 'success': False,
                                 'detail': 'Не определён parentDepartmentId'})
+                continue
+            if not y360_parent_exists(expected_parent, dept_by_id, org_id):
+                summary['errors'] += 1
+                blocked_dns.add(key)
+                results.append({'type': 'error', 'dn': dn, 'name': name,
+                                'success': False,
+                                'detail': ('Родитель id=%s не найден среди '
+                                           'подразделений Яндекс 360'
+                                           % expected_parent)})
                 continue
 
             dept_id = _to_int(mapping.get(key))
@@ -1229,11 +1344,12 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
                 summary['created'] += 1
             else:
                 summary['errors'] += 1
+                blocked_dns.add(key)
                 logger.error('Яндекс 360: не удалось создать подразделение '
                              '%r (родитель %s): %s', name, expected_parent,
                              r.get('detail'))
-                # дети останутся без родителя — фиксируем ошибку и идём далее
-                # (fallback-родитель в _y360_parent_id_for не даст упасть)
+                # потомки этого узла не обрабатываются (см. blocked_dns) —
+                # иначе они создались бы с неверным родителем
 
         # --- устаревшие (OU удалён из ALD Pro, подразделение живёт в 360) ----
         for dn_l, dep_id in list(mapping.items()):

@@ -421,20 +421,34 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
     """
     payload: Dict[str, Any] = {'name': (name or '').strip()[:150]}
     # ВАЖНО (согласно DepartmentService_Create): поле parentDepartmentId
-    # ОБЯЗАТЕЛЬНО и должно быть целочисленным. Значения null / строка
-    # приводят к HTTP 400 "Ошибка проверки поля parentDepartmentId".
-    # Для корневого подразделения родителем является сама организация —
-    # передаём org_id.
+    # ОБЯЗАТЕЛЬНО и должно быть числовым id СУЩЕСТВУЮЩЕГО подразделения.
+    # Значения null / строка приводят к HTTP 400 «Ошибка проверки поля
+    # parentId». id самой организации (orgId) сервер родителем НЕ принимает
+    # (родитель по такому id не находится — тот же HTTP 400 про
+    # обязательность parentId), поэтому org_id здесь запрещён.
     pid_raw = str(parent_department_id if parent_department_id is not None
                   else '').strip()
     try:
-        payload['parentDepartmentId'] = int(pid_raw)
+        pid = int(pid_raw)
     except (TypeError, ValueError):
         return {'success': False, 'status': 0,
                 'detail': ('Некорректный parentDepartmentId %r: идентификатор '
                            'подразделения должен быть числовым'
                            % parent_department_id),
                 'url': ''}
+    try:
+        org_int = int(str(org_id).strip())
+    except (TypeError, ValueError):
+        org_int = None
+    if org_int is not None and pid == org_int:
+        return {'success': False, 'status': 0,
+                'detail': ('parentDepartmentId=%s совпадает с id организации: '
+                           'API Яндекс 360 не принимает организацию в '
+                           'качестве родителя подразделения. Укажите id '
+                           'существующего родительского подразделения.'
+                           % pid),
+                'url': ''}
+    payload['parentDepartmentId'] = pid
     if note:
         payload['note'] = note[:200]
     resp = await request('POST', org_path(org_id, 'departments'),
