@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 
 from database import init_db, get_networks, get_setting
 from api import router, ping_all_hosts_parallel, logger
-import sync360_new
 
 
 # Глобальная переменная для управления фоновой задачей

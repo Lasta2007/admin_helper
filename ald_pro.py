@@ -205,20 +205,6 @@ async def _get_authenticated_client() -> Optional[httpx.AsyncClient]:
     return client
 
 
-def _node_from_treenode(node: Dict[str, Any]) -> Dict[str, Any]:
-    """Преобразовать tree_node (раздел 7.3 документации) в формат записи дерева."""
-    dn = node.get('treenode_dn', '')
-    name = node.get('treenode_display_name', '')
-    return {
-        'organizationunitlistitem_dn': dn,
-        'organizationunitlistitem_parent_dn': node.get('treenode_parent_dn') or '',
-        'organizationunitlistitem_display_name': name,
-        'organizationunitlistitem_is_leaf': bool(node.get('treenode_is_leaf', False)),
-        'organizationunitlistitem_ou': name,
-        'children': [],
-    }
-
-
 def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
     """Создать запись подразделения по DN (заглушка, если API не вернул данные)."""
     name = ou_dn.split(',')[0]
@@ -234,14 +220,14 @@ def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Общий (переиспользуемый) клиент ALD Pro
+# Переиспользуемый авторизованный клиент ALD Pro
 #
 # Нужен для обхода больших поддеревьев OU: авторизация выполняется один раз,
 # а не на каждый запрос (раньше на каждое подразделение создавался новый
 # клиент и выполнялся вход в ALD Pro, из-за чего обход был очень медленным).
+# Клиент создаётся в _get_authenticated_client() и передаётся в fetch_child_units()
+# и get_organizational_unit_users() через параметр client.
 # ---------------------------------------------------------------------------
-
-_shared_client = None
 
 
 async def _relogin(client: httpx.AsyncClient) -> bool:
@@ -252,52 +238,6 @@ async def _relogin(client: httpx.AsyncClient) -> bool:
     _clear_session()
     return await do_login(client, base_url, _aldpro_settings['login'],
                           _aldpro_settings.get('password', ''))
-
-
-async def invalidate_shared_client():
-    """Закрыть общий клиент, чтобы следующий запрос авторизовался заново."""
-    global _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
-
-
-def _client_alive(client) -> bool:
-    """Проверить, что общий клиент ещё не закрыт."""
-    try:
-        return client is not None and not client.is_closed
-    except Exception:
-        return False
-
-
-async def get_shared_client(force_new: bool = False):
-    """Вернуть переиспользуемый авторизованный клиент ALD Pro (или None)."""
-    global _shared_client
-    if _client_alive(_shared_client) and not force_new:
-        return _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
-    client = await _get_authenticated_client()
-    _shared_client = client
-    return client
-
-
-async def close_shared_client():
-    """Закрыть переиспользуемый клиент ALD Pro."""
-    global _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
 
 
 async def _fetch_children(client: httpx.AsyncClient, ou_dn: str) -> list:
@@ -334,8 +274,9 @@ async def fetch_child_units(ou_dn: str, client=None) -> list:
 
     Args:
         ou_dn: DN родительского подразделения.
-        client: переиспользуемый клиент (см. get_shared_client); если не
-                передан — создаётся временный.
+        client: переиспользуемый авторизованный клиент (см.
+                _get_authenticated_client); если не передан — создаётся
+                временный.
 
     Returns:
         Список словарей {'dn', 'name', 'parent'}.
@@ -575,59 +516,6 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
         await client.aclose()
 
 
-def build_ou_tree(units: list) -> list:
-    """
-    Построить иерархическое дерево подразделений из плоского списка.
-    
-    Args:
-        units: Плоский список подразделений с полями:
-               - organizationunitlistitem_dn (DN подразделения)
-               - organizationunitlistitem_parent_dn (DN родительского подразделения)
-               - organizationunitlistitem_display_name (Отображаемое имя)
-               - organizationunitlistitem_is_leaf (Является ли конечным)
-               - organizationunitlistitem_ou (Имя OU)
-    
-    Returns:
-        Иерархический список с вложенными children
-    """
-    if not units:
-        return []
-    
-    # Создаем словарь для быстрого доступа по DN
-    unit_map = {}
-    for unit in units:
-        dn = unit.get('organizationunitlistitem_dn', '')
-        if dn:  # Пропускаем записи без DN
-            unit_map[dn] = {**unit, 'children': []}
-    
-    # Строим дерево
-    root_units = []
-    for dn, unit in unit_map.items():
-        parent_dn = unit.get('organizationunitlistitem_parent_dn', '')
-        
-        # Если есть родитель и он существует в словаре
-        if parent_dn and parent_dn in unit_map:
-            unit_map[parent_dn]['children'].append(unit)
-        else:
-            # Корневое подразделение (нет родителя или родитель не найден)
-            root_units.append(unit)
-    
-    # Сортируем корневые подразделения по имени
-    root_units.sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
-    
-    # Рекурсивно сортируем все дочерние подразделения
-    def sort_children(node):
-        if node.get('children'):
-            node['children'].sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
-            for child in node['children']:
-                sort_children(child)
-    
-    for root in root_units:
-        sort_children(root)
-    
-    return root_units
-
-
 async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, Any]:
     """
     Получить список пользователей подразделения.
@@ -637,7 +525,7 @@ async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, An
     Args:
         ou_dn: DN организационного подразделения (URL-encoded)
         client: переиспользуемый авторизованный клиент (см.
-                get_shared_client); если не передан — создаётся
+                _get_authenticated_client); если не передан — создаётся
                 временный (с отдельной авторизацией).
     """
     own_client = client is None

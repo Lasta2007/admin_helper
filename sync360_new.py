@@ -39,8 +39,6 @@
   * build_department_tree()              — дерево подразделений + пользователи
   * render_tree_text()                   — текстовое (ASCII) представление
   * get_y360_tree(only_roots)            — полный результат: JSON + текст
-  * run_full_sync(trigger)               — заглушка до ЭТАПА 2
-  * get_last_sync_result()               — статус последней операции
 """
 
 import asyncio
@@ -449,51 +447,6 @@ def tree_to_json(tree: Dict[str, Any]) -> Dict[str, Any]:
 # Публичная операция ЭТАПА 1
 # ---------------------------------------------------------------------------
 
-async def get_y360_tree() -> Dict[str, Any]:
-    """Получить подразделения и пользователей Я360 и построить дерево.
-
-    Возвращает {'success', 'json', 'text', 'stats'}; при ошибке —
-    {'success': False, 'error': ...}. Результат сохраняется в статус.
-    """
-    started = datetime.now().isoformat(timespec='seconds')
-    try:
-        org_id = _require_configured()
-        departments, users = await asyncio.gather(
-            fetch_departments(org_id),
-            fetch_users(org_id))
-        tree = build_department_tree(departments, users, org_id)
-        payload = tree_to_json(tree)
-        text = render_tree_text(tree)
-        status = {
-            'success': True,
-            'started': started,
-            'finished': datetime.now().isoformat(timespec='seconds'),
-            'stats': tree['stats'],
-            'error': None,
-        }
-        result = {'success': True, 'json': payload, 'text': text,
-                  'stats': tree['stats']}
-    except Exception as e:
-        logger.exception('Ошибка построения дерева Яндекс 360')
-        status = {
-            'success': False,
-            'started': started,
-            'finished': datetime.now().isoformat(timespec='seconds'),
-            'stats': None,
-            'error': str(e),
-        }
-        result = {'success': False, 'error': str(e)}
-    try:
-        set_module_settings(STATUS_KEY, status)
-    except Exception as e:  # сохранение статуса не должно ломать операцию
-        logger.warning('Не удалось сохранить статус построения дерева: %s', e)
-    return result
-
-
-def get_last_status() -> Dict[str, Any]:
-    status = get_module_settings(STATUS_KEY)
-    return status if isinstance(status, dict) else {}
-
 
 # ---------------------------------------------------------------------------
 # ALD Pro: дерево OU и пользователи subtree базового OU
@@ -515,14 +468,29 @@ ALD_ORPHANS_TITLE = 'Без подразделения'
 ALD_MAX_DEPTH = 40                        # защита от некорректного цикла в каталоге
 
 
+# Значения настроек выгрузки по умолчанию
+ALD_DEFAULT_SETTINGS: Dict[str, Any] = {
+    'root_ou_dn': '',
+    'email_domain': '',
+    'parent_department_id': '',
+    'sync_interval_minutes': 60,
+    'block_missing_users': True,
+}
+
+
 def get_ald_sync_settings() -> Dict[str, Any]:
     """Настройки выгрузки (базовый OU ALD Pro, домен почты и т.д.)."""
-    import sync360 as _legacy
+    result = dict(ALD_DEFAULT_SETTINGS)
+    s = get_module_settings(ALD_SETTINGS_KEY)
+    if isinstance(s, dict):
+        result.update({k: v for k, v in s.items()
+                       if k in ALD_DEFAULT_SETTINGS})
     try:
-        return dict(_legacy.get_sync_settings())
-    except Exception:
-        s = get_module_settings(ALD_SETTINGS_KEY)
-        return s if isinstance(s, dict) else {}
+        result['sync_interval_minutes'] = max(
+            1, int(result.get('sync_interval_minutes') or 60))
+    except (TypeError, ValueError):
+        result['sync_interval_minutes'] = 60
+    return result
 
 
 def save_ald_sync_settings(root_ou_dn: str = None, email_domain: str = None,
@@ -530,7 +498,6 @@ def save_ald_sync_settings(root_ou_dn: str = None, email_domain: str = None,
                            sync_interval_minutes: int = None,
                            block_missing_users: bool = None) -> Dict[str, Any]:
     """Частичное обновление настроек выгрузки (сохраняются в общую БД)."""
-    import sync360 as _legacy
     cur = get_ald_sync_settings()
     new = {
         'root_ou_dn': (cur.get('root_ou_dn', '') if root_ou_dn is None
@@ -547,7 +514,7 @@ def save_ald_sync_settings(root_ou_dn: str = None, email_domain: str = None,
                                 if block_missing_users is None
                                 else bool(block_missing_users)),
     }
-    _legacy.save_sync_settings(new)
+    set_module_settings(ALD_SETTINGS_KEY, new)
     return new
 
 
@@ -870,19 +837,3 @@ async def get_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
 def get_ald_pro_last_status() -> Dict[str, Any]:
     status = get_module_settings(ALD_STATUS_KEY)
     return status if isinstance(status, dict) else {}
-
-
-# Совместимость с текущим api.py/main.py (до ЭТАПА 2 полная синхронизация
-# выполняется старым модулем sync360.py; здесь — заглушки).
-
-def get_last_sync_result() -> Dict[str, Any]:
-    return get_last_status()
-
-
-async def run_full_sync(trigger: str = 'manual') -> Dict[str, Any]:
-    """Заглушка ЭТАПА 1: полная синхронизация будет реализована далее."""
-    raise NotImplementedError(
-        'Синхронизация с нуля: пока реализован только ЭТАП 1 '
-        '(получение дерева подразделений и пользователей). '
-        'Используйте get_y360_tree(); полные правила синхронизации '
-        'будут добавлены на следующих этапах.')

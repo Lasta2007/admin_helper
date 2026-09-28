@@ -1,9 +1,0 @@
-2026-09-22 06:03:02 - admin_helper - INFO - [migrate_db] Миграция базы данных завершена
-INFO:     Started server process [300]
-INFO:     Waiting for application startup.
-2026-09-22 06:03:02 - admin_helper - INFO - [lifespan] Запуск приложения, старт фоновой задачи пинга
-2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Фоновая задача пинга запущена
-2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Начало фонового пинга всех подсетей (интервал: 60 мин)
-2026-09-22 06:03:02 - admin_helper - INFO - [background_ping_task] Фоновый пинг завершен. Следующий через 60 мин
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
