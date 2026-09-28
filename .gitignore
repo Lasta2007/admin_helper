@@ -1,1 +1,6 @@
-(empty)
+# Compiled files
+__pycache__/
+*.pyc
+
+# Database files
+admin_helper.db

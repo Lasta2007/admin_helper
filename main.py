@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db, get_networks, get_setting
-from api import router, ping_all_hosts_parallel, logger
+from api import (router, ping_all_hosts_parallel, logger,
+                 start_y360_dept_sync_background,
+                 stop_y360_dept_sync_background)
 
 
 # Глобальная переменная для управления фоновой задачей
@@ -74,11 +76,18 @@ async def lifespan(app: FastAPI):
     background_task_running = True
     background_task = asyncio.create_task(background_ping_task())
 
+    # Фоновая синхронизация структуры подразделений ALD Pro -> Яндекс 360
+    # (интервал — настройка sync_interval_minutes; при неполных настройках
+    # интеграции циклы просто пропускаются)
+    start_y360_dept_sync_background()
+
     yield
 
     # Остановка при завершении приложения
     logger.info("[lifespan] Остановка приложения, остановка фоновой задачи пинга")
     background_task_running = False
+
+    await stop_y360_dept_sync_background()
 
     if background_task:
         background_task.cancel()

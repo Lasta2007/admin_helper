@@ -1202,6 +1202,11 @@ async def api_aldpro_tree_get(base_ou: str = Query(None, description=(
 class Yandex360AldTreeSettings(BaseModel):
     """Настройки страницы «Яндекс 360» нового модуля (sync360_new)."""
     root_ou_dn: str = ""
+    # id родительского подразделения Яндекс 360, внутри которого создаются
+    # корневые OU ALD Pro; пусто — родитель = сама организация (orgId)
+    parent_department_id: Optional[str] = None
+    # период фоновой синхронизации структуры, минут
+    sync_interval_minutes: Optional[int] = None
 
 
 @router.get("/yandex360/aldpro/tree/settings")
@@ -1214,7 +1219,9 @@ def api_aldpro_tree_settings_get():
 def api_aldpro_tree_settings_save(settings: Yandex360AldTreeSettings):
     """Сохранить базовый OU ALD Pro для построения дерева."""
     saved = sync360_new.save_ald_sync_settings(
-        root_ou_dn=settings.root_ou_dn.strip() or None
+        root_ou_dn=settings.root_ou_dn.strip() or None,
+        parent_department_id=settings.parent_department_id,
+        sync_interval_minutes=settings.sync_interval_minutes,
     )
     return {"status": "ok", "settings": saved}
 
@@ -1223,3 +1230,94 @@ def api_aldpro_tree_settings_save(settings: Yandex360AldTreeSettings):
 def api_aldpro_tree_status():
     """Статус последней операции построения дерева ALD Pro."""
     return sync360_new.get_ald_pro_last_status()
+
+
+# ---------------------------------------------------------------------------
+# Синхронизация СТРУКТУРЫ подразделений ALD Pro -> Яндекс 360 (ЭТАП 2).
+# Используются только методы из документации API Яндекс 360:
+#   DepartmentService_List / Create / Update (api360.yandex.net).
+# Подразделения в Яндекс 360 НЕ удаляются автоматически.
+# ---------------------------------------------------------------------------
+
+class Yandex360DeptSyncRequest(BaseModel):
+    base_ou: str = ""          # необязательный переопределяемый базовый OU
+
+
+@router.post("/yandex360/departments/sync/plan")
+async def api_departments_sync_plan(req: Yandex360DeptSyncRequest):
+    """Предпросмотр плана синхронизации структуры (без изменений в Яндекс 360)."""
+    try:
+        plan = await sync360_new.plan_departments_sync(
+            (req.base_ou or '').strip() or None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return plan
+
+
+@router.post("/yandex360/departments/sync/run")
+async def api_departments_sync_run(req: Yandex360DeptSyncRequest):
+    """Запустить синхронизацию структуры подразделений вручную (одна итерация).
+
+    Повторный запуск во время выполнения отклоняется (busy=true, HTTP 409).
+    """
+    try:
+        result = await sync360_new.run_departments_sync_once(
+            (req.base_ou or '').strip() or None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if result.get('busy'):
+        raise HTTPException(status_code=409,
+                            detail=result.get('error') or 'Синхронизация уже выполняется')
+    if not result.get('success'):
+        raise HTTPException(status_code=400,
+                            detail=result.get('error') or 'Ошибка синхронизации')
+    return result
+
+
+@router.get("/yandex360/departments/sync/status")
+def api_departments_sync_status():
+    """Статус последней синхронизации структуры + флаг выполнения + фон-задача."""
+    st = sync360_new.get_dept_sync_last_status()
+    st['running'] = sync360_new.dept_sync_is_running()
+    st['background_enabled'] = bool(_y360_bg_state['task'] is not None
+                                    and not _y360_bg_state['stop_event'].is_set())
+    st['interval_minutes'] = sync360_new.get_ald_sync_settings().get(
+        'sync_interval_minutes')
+    return st
+
+
+# --- управление фоновой задачей синхронизации структуры ---------------------
+
+_y360_bg_state: dict = {'task': None, 'stop_event': None}
+
+
+def start_y360_dept_sync_background() -> bool:
+    """Запустить фоновую задачу периодической синхронизации (идемпотентно).
+
+    Вызывается из lifespan приложения (main.py). Возвращает True, если задача
+    запущена (или уже работала).
+    """
+    if _y360_bg_state['task'] is not None and not _y360_bg_state['task'].done():
+        return True
+    stop_event = asyncio.Event()
+    _y360_bg_state['stop_event'] = stop_event
+    _y360_bg_state['task'] = asyncio.create_task(
+        sync360_new.run_departments_sync_loop(stop_event))
+    logger.info('[y360-dept-sync] Фоновая задача синхронизации структуры запущена')
+    return True
+
+
+async def stop_y360_dept_sync_background() -> None:
+    """Остановить фоновую задачу синхронизации (вызывается при shutdown)."""
+    ev = _y360_bg_state.get('stop_event')
+    task = _y360_bg_state.get('task')
+    if ev is not None:
+        ev.set()
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            task.cancel()
+    _y360_bg_state['task'] = None
+    _y360_bg_state['stop_event'] = None
+    logger.info('[y360-dept-sync] Фоновая задача синхронизации структуры остановлена')
