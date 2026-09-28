@@ -1141,3 +1141,73 @@ document.getElementById('y360AldTreeBtn').onclick = async () => {
     btn.textContent = 'Построить дерево ALD Pro';
   }
 };
+
+// ---------------------------------------------------------------------------
+// Яндекс 360: список всех подразделений организации (DepartmentService_List)
+// Блок расположен НИЖЕ блока подразделений из ALD Pro.
+// GET /api/yandex360/departments -> yandex360.get_all_departments()
+// Параметры API: orderBy (id|name), page, parentId, perPage (используется 1000).
+// ---------------------------------------------------------------------------
+
+let y360DepartmentsData = null;  // последний полученный ответ /departments
+
+function renderY360Departments(data) {
+  const textEl = document.getElementById('y360DepartmentsText');
+  const deps = (data && data.departments) || [];
+  const lines = deps.map(d => {
+    const parent = (d.parentDepartmentId === undefined || d.parentDepartmentId === null)
+      ? 0 : d.parentDepartmentId;
+    const note = d.note ? ' — ' + d.note : '';
+    return `${d.id}\t${d.name || '(без названия)'}\tparentDepartmentId=${parent}${note}`;
+  });
+  textEl.textContent = deps.length
+    ? ('id\tназвание\tродитель\n' + '-'.repeat(60) + '\n' + lines.join('\n'))
+    : 'Подразделения не найдены (список пуст).';
+  const statusEl = document.getElementById('y360DepartmentsStatus');
+  statusEl.textContent =
+    `Всего подразделений: ${data.total ?? deps.length} · ` +
+    `получено: ${deps.length} · ` +
+    `страниц обходано: ${data.pages || 1} · ` +
+    `perPage: ${data.perPage || 1000} · ` +
+    `orderBy: ${data.orderBy || 'id'}` +
+    (data.parentId !== null && data.parentId !== undefined
+      ? ` · parentId: ${data.parentId}` : ' · все подразделения организации');
+}
+
+async function loadY360Departments() {
+  const btn = document.getElementById('y360DepartmentsBtn');
+  const statusEl = document.getElementById('y360DepartmentsStatus');
+  const textEl = document.getElementById('y360DepartmentsText');
+  const orderBy = document.getElementById('y360DepartmentsOrderBy').value || 'id';
+  const parentIdRaw = document.getElementById('y360DepartmentsParentId').value.trim();
+  let url = '/api/yandex360/departments?order_by=' + encodeURIComponent(orderBy);
+  if (parentIdRaw) {
+    if (!/^\d+$/.test(parentIdRaw)) {
+      alert('parentId должен быть целым числом (идентификатор родительского подразделения).');
+      return;
+    }
+    url += '&parent_id=' + encodeURIComponent(parentIdRaw);
+  }
+  btn.disabled = true;
+  btn.textContent = 'Загрузка...';
+  statusEl.textContent = 'Получаем список подразделений из Яндекс 360 (perPage=1000)...';
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      textEl.textContent = 'Ошибка: ' + (data.detail || res.status);
+      y360DepartmentsData = null;
+      return;
+    }
+    y360DepartmentsData = data;
+    renderY360Departments(data);
+  } catch (e) {
+    statusEl.textContent = 'Ошибка запроса списка подразделений Яндекс 360: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Получить список подразделений Яндекс 360';
+  }
+}
+
+document.getElementById('y360DepartmentsBtn').onclick = loadY360Departments;

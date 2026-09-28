@@ -165,6 +165,21 @@
       <div id="y360AldTreeStatus" style="color:#666; margin-bottom:6px;"></div>
       <pre id="y360AldTreeText" class="y360-tree-box">Укажите базовый OU и нажмите «Построить дерево ALD Pro» — здесь появится структура подразделений от базового OU с пользователями.</pre>
       <div id="y360AldTreeHtml" class="hidden"></div>
+
+      <h3>Подразделения Яндекс 360</h3>
+      <div class="toolbar" style="margin-bottom:6px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button id="y360DepartmentsBtn">Получить список подразделений Яндекс 360</button>
+        <label style="margin:0;">Сортировка:</label>
+        <select id="y360DepartmentsOrderBy">
+          <option value="id">id (по идентификатору)</option>
+          <option value="name">name (по названию)</option>
+        </select>
+        <label style="margin:0;">parentId (необязательно):</label>
+        <input id="y360DepartmentsParentId" type="text" placeholder="все подразделения" style="width:160px;">
+      </div>
+      <small style="color:#888;">Список всех подразделений организации из API Яндекс 360: GET /directory/v1/org/{orgId}/departments (DepartmentService_List). Параметры: orderBy (id|name), page, parentId, perPage — используется perPage = 1000 (максимум по документации), при необходимости все страницы обходятся автоматически. Если parentId не указан — выводятся все подразделения организации.</small>
+      <div id="y360DepartmentsStatus" style="color:#666; margin-bottom:6px;"></div>
+      <pre id="y360DepartmentsText" class="y360-tree-box">Нажмите «Получить список подразделений Яндекс 360» — здесь появится плоский список всех подразделений организации (id, название, parentDepartmentId).</pre>
     </div>
   </div>
 </div>

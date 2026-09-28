@@ -1163,6 +1163,48 @@ def api_yandex360_oauth_link(client_id: str = Query(..., description="ClientID O
     return {"link": yandex360.build_oauth_link(client_id)}
 
 
+@router.get("/yandex360/departments")
+async def api_y360_departments(
+        order_by: str = Query(None, description=(
+            "Вид сортировки: id (по идентификатору, по умолчанию) или "
+            "name (по названию).")),
+        page: int = Query(None, description=(
+            "Номер страницы ответа (по умолчанию 1). Если не указан — "
+            "выгружаются ВСЕ страницы списка.")),
+        parent_id: int = Query(None, description=(
+            "Идентификатор родительского подразделения. Если не указан — "
+            "выводятся все подразделения организации.")),
+        per_page: int = Query(yandex360.DEPARTMENTS_PER_PAGE, ge=1, le=1000,
+                              description=(
+            "Количество подразделений на одной странице (по умолчанию и "
+            "максимум — 1000).")),
+):
+    """Получить список всех подразделений организации из Яндекс 360.
+
+    DepartmentService_List:
+    GET https://api360.yandex.net/directory/v1/org/{orgId}/departments
+
+    Допустимые параметры запроса: orderBy (id|name), page, parentId,
+    perPage. Здесь perPage по умолчанию равен 1000 (максимум по
+    документации), поэтому весь список выбирается за минимальное число
+    запросов; если page не передан — модуль сам обходит все страницы и
+    возвращает полный список (поле 'departments').
+    """
+    if page is None:
+        # полный список всех подразделений (постраничный обход, perPage=1000)
+        result = await yandex360.get_all_departments(
+            order_by=order_by, parent_id=parent_id)
+    else:
+        result = await yandex360.list_departments(
+            order_by=order_by, page=page, parent_id=parent_id,
+            per_page=per_page)
+    if not result.get('success'):
+        raise HTTPException(status_code=400,
+                            detail=result.get('detail') or
+                            'Ошибка получения списка подразделений')
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Синхронизация пользователей и подразделений ALD Pro -> Яндекс 360
 # ---------------------------------------------------------------------------

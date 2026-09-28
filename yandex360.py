@@ -53,7 +53,7 @@ fallback=True — явный повтор на другом хосте, по у�
 """
 import base64
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 import httpx
 
@@ -490,6 +490,125 @@ async def get_departments(limit: int = 100, page_index: int = 0) -> Dict[str, An
     except Exception as e:
         logger.error(f"Ошибка получения подразделений Яндекс 360: {e}")
         return {'success': False, 'detail': f'Ошибка: {e}'}
+
+
+# Допустимые значения сортировки DepartmentService_List (см. документацию
+# https://api360.yandex.net/directory/v1/org/{orgId}/departments):
+#   id   — по идентификатору (по умолчанию),
+#   name — по названию.
+DEPARTMENTS_ORDER_BY = ('id', 'name')
+
+# Размер страницы для DepartmentService_List. Документация допускает
+# perPage до 1000 — используем максимум, чтобы получать весь список
+# подразделений организации за минимальное число запросов.
+DEPARTMENTS_PER_PAGE = 1000
+
+
+async def list_departments(order_by: str = None, page: int = 1,
+                           parent_id: int = None,
+                           per_page: int = DEPARTMENTS_PER_PAGE,
+                           org_id: str = None) -> Dict[str, Any]:
+    """Одна страница списка подразделений (DepartmentService_List).
+
+    GET /directory/v1/org/{orgId}/departments
+
+    Допустимые query-параметры согласно документации:
+      * orderBy  — вид сортировки: 'id' (по идентификатору, по умолчанию)
+                   или 'name' (по названию);
+      * page     — номер страницы ответа (по умолчанию 1);
+      * parentId — идентификатор родительского подразделения; если не
+                   указан — выводятся ВСЕ подразделения организации;
+      * perPage  — количество подразделений на странице (по умолчанию 10;
+                   здесь по умолчанию используется максимум — 1000).
+    """
+    org_id = str(org_id or _y360_settings.get('org_id') or '').strip()
+    if not org_id or not _y360_settings.get('oauth_token'):
+        return {'success': False, 'detail': 'Яндекс 360 не настроен'}
+    # нормализация необязательных параметров (в запрос идут только заданные)
+    order_by = (order_by or '').strip().lower() or None
+    if order_by and order_by not in DEPARTMENTS_ORDER_BY:
+        return {'success': False,
+                'detail': "Недопустимое значение orderBy: '%s' "
+                          "(допустимо: %s)" % (order_by, ', '.join(DEPARTMENTS_ORDER_BY))}
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        return {'success': False, 'detail': 'Некорректное значение page'}
+    try:
+        per_page = int(per_page or DEPARTMENTS_PER_PAGE)
+    except (TypeError, ValueError):
+        return {'success': False, 'detail': 'Некорректное значение perPage'}
+    per_page = max(1, min(per_page, DEPARTMENTS_PER_PAGE))
+    params: Dict[str, Any] = {'perPage': per_page, 'page': page}
+    if order_by:
+        params['orderBy'] = order_by
+    if parent_id is not None and str(parent_id).strip() != '':
+        try:
+            params['parentId'] = int(parent_id)
+        except (TypeError, ValueError):
+            return {'success': False, 'detail': 'Некорректное значение parentId'}
+    path = org_path(org_id, 'departments')
+    try:
+        response = await request('GET', path, params=params,
+                                 headers=auth_headers())
+        if response.status_code != 200:
+            return {'success': False, 'status': response.status_code,
+                    'url': str(response.request.url),
+                    'detail': f'HTTP {response.status_code}: {response.text[:150]}'}
+        body = response.json() or {}
+        deps = body.get('departments')
+        if not isinstance(deps, list):  # запасной вариант на случай отличий ответа
+            for key in ('items', 'result'):
+                if isinstance(body.get(key), list):
+                    deps = body[key]
+                    break
+        return {'success': True,
+                'total': int(body.get('total') or len(deps or [])),
+                'page': page, 'perPage': per_page,
+                'orderBy': order_by or 'id',
+                'parentId': params.get('parentId'),
+                'departments': deps or [],
+                'raw': body}
+    except Exception as e:
+        logger.error(f"Ошибка получения списка подразделений Яндекс 360: {e}")
+        return {'success': False, 'detail': f'Ошибка: {e}'}
+
+
+async def get_all_departments(order_by: str = None, parent_id: int = None,
+                              org_id: str = None) -> Dict[str, Any]:
+    """Полный список всех подразделений организации (все страницы).
+
+    Обходит DepartmentService_List постранично с perPage = 1000
+    (максимум по документации) и параметром page (номер страницы,
+    начиная с 1). Если parentId не указан — возвращаются все
+    подразделения организации независимо от вложенности.
+    """
+    all_deps: List[dict] = []
+    page = 1
+    total = None
+    while True:
+        res = await list_departments(order_by=order_by, page=page,
+                                     parent_id=parent_id, org_id=org_id)
+        if not res.get('success'):
+            return res
+        deps = res.get('departments') or []
+        all_deps.extend(deps)
+        total = res.get('total')
+        if not deps:
+            break
+        if total is not None and len(all_deps) >= int(total):
+            break
+        if total is None and len(deps) < DEPARTMENTS_PER_PAGE:
+            break
+        page += 1
+    return {'success': True,
+            'total': int(total or len(all_deps)),
+            'fetched': len(all_deps),
+            'pages': page,
+            'perPage': DEPARTMENTS_PER_PAGE,
+            'orderBy': (order_by or 'id'),
+            'parentId': parent_id,
+            'departments': all_deps}
 
 
 def get_write_token() -> Optional[str]:
