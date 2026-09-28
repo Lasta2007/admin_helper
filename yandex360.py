@@ -30,7 +30,7 @@ helper-е resolve_base_url(), который использует request().
 - GET    /directory/v1/org/{orgId}/departments    — список подразделений
            (DepartmentService_List)
 - POST   /directory/v1/org/{orgId}/departments    — СОЗДАТЬ подразделение
-           (DepartmentService_Create: name, parentDepartmentId, note)
+           (DepartmentService_Create: name, parentId)
            *** только на https://api360.yandex.net ***
 - GET    /directory/v1/org/{orgId}/departments/{id} — о подразделении
            (DepartmentService_Get)
@@ -503,23 +503,16 @@ def get_write_token() -> Optional[str]:
     return (_y360_settings.get('oauth_token') or '').strip() or None
 
 
-def _is_required_field_error(text: str, field: str) -> bool:
-    """Проверить, что ответ API — 400 «поле "<field>" является обязательным»."""
-    if not text:
-        return False
-    low = text.lower()
-    has_field = (f'поле "{field}"' in low) or (f'"{field}"' in low and 'поле' in low) \
-        or (f'property "{field}"' in low) or (f'"{field}"' in low and 'required' in low)
-    return has_field and ('обязательн' in low or 'required' in low)
-
-
 async def create_department(org_id: str, name: str, parent_department_id=None,
-                            note: str = '',
                             token: Optional[str] = None) -> Dict[str, Any]:
     """Создать подразделение (DepartmentService_Create).
 
     POST https://api360.yandex.net/directory/v1/org/{orgId}/departments
-    Тело: {"name": str, "parentDepartmentId": int|null, "note": str}.
+    Тело запроса — СТРОГО по документации DepartmentService_Create
+    (https://yandex.ru/dev/api360/doc/ru/ref/DepartmentService/DepartmentService_Create):
+        {"name": <имя подразделения>, "parentId": <id родительского подразделения>}
+    Других полей в запросе нет; недокументированные атрибуты
+    (parentDepartmentId, note и т.п.) API не принимает.
     Возвращает dict c 'success' и 'id' созданного подразделения.
     Требуется право OAuth directory:write_departments.
 
@@ -529,19 +522,17 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
     HTTP 405 MethodNotAllowedError). Перенаправление выполняет request().
     """
     payload: Dict[str, Any] = {'name': (name or '').strip()[:150]}
-    # ВАЖНО (согласно DepartmentService_Create): поле parentDepartmentId
-    # ОБЯЗАТЕЛЬНО и должно быть числовым id СУЩЕСТВУЮЩЕГО подразделения.
-    # Значения null / строка приводят к HTTP 400 «Ошибка проверки поля
-    # parentId». id самой организации (orgId) сервер родителем НЕ принимает
-    # (родитель по такому id не находится — тот же HTTP 400 про
-    # обязательность parentId), поэтому org_id здесь запрещён.
+    # parentId ОБЯЗАТЕЛЕН и должен быть числовым id СУЩЕСТВУЮЩЕГО
+    # подразделения. Значения null / строка приводят к HTTP 400 «Ошибка
+    # проверки поля "parentId"». id самой организации (orgId) сервер
+    # родителем НЕ принимает, поэтому org_id здесь запрещён.
     pid_raw = str(parent_department_id if parent_department_id is not None
                   else '').strip()
     try:
         pid = int(pid_raw)
     except (TypeError, ValueError):
         return {'success': False, 'status': 0,
-                'detail': ('Некорректный parentDepartmentId %r: идентификатор '
+                'detail': ('Некорректный parentId %r: идентификатор '
                            'подразделения должен быть числовым'
                            % parent_department_id),
                 'url': ''}
@@ -551,7 +542,7 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
         org_int = None
     if org_int is not None and pid == org_int:
         return {'success': False, 'status': 0,
-                'detail': ('parentDepartmentId=%s совпадает с id организации: '
+                'detail': ('parentId=%s совпадает с id организации: '
                            'API Яндекс 360 не принимает организацию в '
                            'качестве родителя подразделения. Родителем '
                            'корневых элементов является стандартное '
@@ -562,32 +553,15 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
                 'url': ''}
     if pid <= 0:
         return {'success': False, 'status': 0,
-                'detail': ('Недопустимый parentDepartmentId=%s: должен быть '
+                'detail': ('Недопустимый parentId=%s: должен быть '
                            'положительным id существующего подразделения '
                            '(для корневых элементов — id подразделения '
                            '«Все сотрудники», обычно 1).' % pid),
                 'url': ''}
-    payload['parentDepartmentId'] = pid
-    if note:
-        payload['note'] = note[:200]
+    payload['parentId'] = pid
     resp = await request('POST', org_path(org_id, 'departments'),
                          json=payload,
                          headers=auth_headers(token or get_write_token()))
-    # Совместимость с разными версиями схемы DepartmentService_Create:
-    # документация описывает поле parentDepartmentId, но часть эндпоинтов
-    # (disk-api-*) требует parentId — об этом сообщает HTTP 400 вида
-    # «Ошибка проверки поля "parentId": Это поле является обязательным».
-    # В этом случае повторяем тот же POST с именем поля parentId.
-    if (resp.status_code == 400 and 'parentId' in resp.text
-            and _is_required_field_error(resp.text, 'parentId')):
-        alt_payload = dict(payload)
-        alt_payload['parentId'] = alt_payload.pop('parentDepartmentId')
-        logger.info('Яндекс 360: POST /departments отклонён (требуется поле '
-                    '"parentId") — повторяю запрос с альтернативным именем '
-                    'поля родителя')
-        resp = await request('POST', org_path(org_id, 'departments'),
-                             json=alt_payload,
-                             headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201):
         return {'success': False,
                 'status': resp.status_code,
@@ -601,13 +575,14 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
 
 
 async def update_department(org_id: str, department_id, name: str = None,
-                            parent_department_id=None, note: str = None,
+                            parent_department_id=None,
                             token: Optional[str] = None) -> Dict[str, Any]:
     """Изменить подразделение (DepartmentService_Update).
 
     PATCH https://api360.yandex.net/directory/v1/org/{orgId}/departments/{id}
-    Тело (только изменяемые поля): {"name": str, "parentDepartmentId": int,
-    "note": str}. Возвращает dict {'success': bool, ...}.
+    Тело — только документированные изменяемые поля:
+        {"name": <новое имя>, "parentId": <новый id родителя>}
+    Возвращает dict {'success': bool, ...}.
     Требуется право OAuth directory:write_departments.
     """
     did = str(department_id or '').strip()
@@ -620,32 +595,24 @@ async def update_department(org_id: str, department_id, name: str = None,
         payload['name'] = (name or '').strip()[:150]
     if parent_department_id is not None:
         try:
-            payload['parentDepartmentId'] = int(str(parent_department_id).strip())
+            pid = int(str(parent_department_id).strip())
         except (TypeError, ValueError):
             return {'success': False, 'status': 0,
-                    'detail': ('Некорректный parentDepartmentId %r'
+                    'detail': ('Некорректный parentId %r'
                                % parent_department_id),
                     'url': ''}
-    if note is not None:
-        payload['note'] = note[:200]
+        if pid <= 0:
+            return {'success': False, 'status': 0,
+                    'detail': ('Недопустимый parentId=%s: должен быть '
+                               'положительным id существующего '
+                               'подразделения.' % pid),
+                    'url': ''}
+        payload['parentId'] = pid
     if not payload:
         return {'success': True, 'skipped': True, 'id': did}
     resp = await request('PATCH', org_path(org_id, f'departments/{did}'),
                          json=payload,
                          headers=auth_headers(token or get_write_token()))
-    # Совместимость со схемой parentId (см. create_department): если PATCH
-    # с parentDepartmentId отклонён требованием поля parentId — повторяем с
-    # parentId.
-    if ('parentDepartmentId' in payload and resp.status_code == 400
-            and _is_required_field_error(resp.text, 'parentId')):
-        alt_payload = dict(payload)
-        alt_payload['parentId'] = alt_payload.pop('parentDepartmentId')
-        logger.info('Яндекс 360: PATCH /departments/%s отклонён (требуется '
-                    'поле "parentId") — повторяю запрос с альтернативным '
-                    'именем поля родителя', did)
-        resp = await request('PATCH', org_path(org_id, f'departments/{did}'),
-                             json=alt_payload,
-                             headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201, 204):
         return {'success': False,
                 'status': resp.status_code,
