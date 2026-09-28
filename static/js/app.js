@@ -963,6 +963,7 @@ function showY360Sync() {
   document.getElementById('y360SyncView').classList.remove('hidden');
   loadY360SyncSettings();
   if (typeof loadY360AldTreeStatus === 'function') loadY360AldTreeStatus();
+  if (typeof loadY360DeptSyncStatus === 'function') loadY360DeptSyncStatus();
 }
 
 document.getElementById('y360SyncNav').onclick = () => showY360Sync();
@@ -973,14 +974,19 @@ document.getElementById('y360SyncBackBtn').onclick = (e) => {
   showIPAM();
 };
 
-// Настройки страницы: поле «Базовый OU» сохраняется в новом модуле
-// (sync360_new) через эндпоинт /api/yandex360/aldpro/tree/settings.
+// Настройки страницы: поля «Базовый OU», «Родительский департамент 360» и
+// «Интервал синхронизации» сохраняются в новом модуле (sync360_new)
+// через эндпоинт /api/yandex360/aldpro/tree/settings.
 async function loadY360SyncSettings() {
   try {
     const res = await fetch('/api/yandex360/aldpro/tree/settings');
     if (!res.ok) return;
     const s = await res.json();
     document.getElementById('y360SyncRootOuInput').value = s.root_ou_dn || '';
+    const parentEl = document.getElementById('y360DeptParentInput');
+    if (parentEl) parentEl.value = s.parent_department_id || '';
+    const intEl = document.getElementById('y360DeptIntervalInput');
+    if (intEl && s.sync_interval_minutes) intEl.value = s.sync_interval_minutes;
   } catch (e) {
     console.error('Ошибка загрузки настроек дерева ALD Pro:', e);
   }
@@ -988,7 +994,9 @@ async function loadY360SyncSettings() {
 
 document.getElementById('y360SyncSaveBtn').onclick = async () => {
   const settings = {
-    root_ou_dn: document.getElementById('y360SyncRootOuInput').value.trim()
+    root_ou_dn: document.getElementById('y360SyncRootOuInput').value.trim(),
+    parent_department_id: (document.getElementById('y360DeptParentInput')?.value || '').trim(),
+    sync_interval_minutes: parseInt(document.getElementById('y360DeptIntervalInput')?.value || '60', 10)
   };
   try {
     const res = await fetch('/api/yandex360/aldpro/tree/settings', {
@@ -1141,3 +1149,134 @@ document.getElementById('y360AldTreeBtn').onclick = async () => {
     btn.textContent = 'Построить дерево ALD Pro';
   }
 };
+
+
+// ---------------------------------------------------------------------------
+// Яндекс 360: синхронизация СТРУКТУРЫ подразделений ALD Pro -> Яндекс 360
+// (ЭТАП 2, модуль sync360_new; только официальный API Яндекс 360:
+//  DepartmentService_List / Create / Update на api360.yandex.net)
+// ---------------------------------------------------------------------------
+
+function y360RenderDeptPlan(plan) {
+  const st = plan.stats || {};
+  const lines = [];
+  lines.push('План синхронизации структуры (изменений не выполнено)');
+  lines.push(`ALD Pro: базовый OU "${plan.ald_base_dn || ''}", ` +
+             `подразделений: ${(plan.ald_stats || {}).departments || 0}`);
+  lines.push(`Яндекс 360: подразделений всего: ${plan.y360_departments_total || 0}`);
+  lines.push(`Действий: создать=${st.create || 0}, переименовать=${st.rename || 0}, ` +
+             `переместить=${st.move || 0}, привязать=${st.bind || 0}, ` +
+             `без изменений=${st.noop || 0}, осиротевших=${st.stale || 0}` +
+             (st.errors ? `, ошибок=${st.errors}` : ''));
+  lines.push('—'.repeat(40));
+  (plan.actions || []).forEach(a => {
+    if (a.type === 'create') {
+      lines.push(`+ СОЗДАТЬ: «${a.name}» (родитель id=${a.parentDepartmentId}) ← OU ${a.dn}`);
+    } else if (a.type === 'rename') {
+      lines.push(`~ ПЕРЕИМЕНОВАТЬ: id=${a.id}: «${a.from}» → «${a.to}»`);
+    } else if (a.type === 'move') {
+      lines.push(`↔ ПЕРЕМЕСТИТЬ: id=${a.id}: родитель ${a.from} → ${a.to}`);
+    } else if (a.type === 'bind') {
+      lines.push(`≡ ПРИВЯЗАТЬ существующее: id=${a.id} «${a.name}» ← OU ${a.dn}`);
+    } else if (a.type === 'stale') {
+      lines.push(`! ОСИРОТЕЛО: id=${a.id} «${a.name}» — OU ${a.dn} удалён из ALD Pro ` +
+                 `(в Яндекс 360 сохранено, удаление — вручную)`);
+    } else if (a.type === 'unmap') {
+      lines.push(`- РАЗВИЯЗАТЬ: id=${a.id} (подразделения нет в Яндекс 360)`);
+    } else if (a.type === 'error') {
+      lines.push(`✗ ОШИБКА ПЛАНА: ${a.dn}: ${a.detail || ''}`);
+    }
+  });
+  if (!(plan.actions || []).length) {
+    lines.push('Изменений нет — структура Яндекс 360 соответствует ALD Pro.');
+  }
+  return lines.join('\n');
+}
+
+document.getElementById('y360DeptSettingsSaveBtn').onclick = async () => {
+  document.getElementById('y360SyncSaveBtn').click();
+};
+
+document.getElementById('y360DeptPlanBtn').onclick = async () => {
+  const btn = document.getElementById('y360DeptPlanBtn');
+  const statusEl = document.getElementById('y360DeptSyncStatus');
+  const textEl = document.getElementById('y360DeptSyncText');
+  btn.disabled = true;
+  btn.textContent = 'Расчёт плана...';
+  statusEl.textContent = 'Читаем дерево ALD Pro и подразделения Яндекс 360...';
+  try {
+    const res = await fetch('/api/yandex360/departments/sync/plan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({base_ou: document.getElementById('y360SyncRootOuInput').value.trim()})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      textEl.textContent = 'Ошибка: ' + (data.detail || res.status);
+      return;
+    }
+    textEl.textContent = y360RenderDeptPlan(data);
+    statusEl.textContent = 'Это план — изменения в Яндекс 360 ещё НЕ вносились. ' +
+      'Нажмите «Синхронизировать сейчас» для применения.';
+  } catch (e) {
+    statusEl.textContent = 'Ошибка запроса плана: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Предпросмотр плана';
+  }
+};
+
+document.getElementById('y360DeptRunBtn').onclick = async () => {
+  if (!confirm('Создать/обновить подразделения в Яндекс 360 по структуре ALD Pro?\n' +
+               '(удаления подразделений выполняться не будут)')) return;
+  const btn = document.getElementById('y360DeptRunBtn');
+  const statusEl = document.getElementById('y360DeptSyncStatus');
+  const textEl = document.getElementById('y360DeptSyncText');
+  btn.disabled = true;
+  btn.textContent = 'Синхронизация...';
+  statusEl.textContent = 'Выполняется синхронизация структуры через API Яндекс 360...';
+  try {
+    const res = await fetch('/api/yandex360/departments/sync/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({base_ou: document.getElementById('y360SyncRootOuInput').value.trim()})
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      statusEl.textContent = '';
+      textEl.textContent = 'Ошибка: ' + (data.detail || res.status);
+      return;
+    }
+    textEl.textContent = data.text || '(пусто)';
+    const s = data.summary || {};
+    statusEl.textContent = `Готово: создано=${s.created}, переименовано=${s.renamed}, ` +
+      `перемещено=${s.moved}, привязано=${s.bound}, осиротевших=${s.stale}, ошибок=${s.errors}.`;
+  } catch (e) {
+    statusEl.textContent = 'Ошибка запуска синхронизации: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Синхронизировать сейчас';
+    loadY360DeptSyncStatus();
+  }
+};
+
+async function loadY360DeptSyncStatus() {
+  try {
+    const res = await fetch('/api/yandex360/departments/sync/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    const el = document.getElementById('y360DeptSyncStatus');
+    if (!s || !s.finished) {
+      el.textContent = 'Фоновая синхронизация структуры: задача активна, циклы ещё не выполнялись ' +
+        '(нужны полные настройки интеграции).';
+      return;
+    }
+    const sm = s.summary || {};
+    el.textContent = `Последняя синхронизация: ${s.finished} · ` +
+      `${s.success ? 'успешно' : ('ошибка: ' + (s.error || ''))} · ` +
+      `создано=${sm.created || 0}, обновлено=${(sm.renamed || 0) + (sm.moved || 0)}, ` +
+      `ошибок=${sm.errors || 0}. ` +
+      `Фон: ${s.background_enabled ? 'вкл' : 'выкл'}, интервал ${s.interval_minutes || 60} мин.`;
+  } catch (e) { /* не критично */ }
+}

@@ -452,3 +452,68 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
             'data': body}
 
 
+async def update_department(org_id: str, department_id, name: str = None,
+                            parent_department_id=None, note: str = None,
+                            token: Optional[str] = None) -> Dict[str, Any]:
+    """Изменить подразделение (DepartmentService_Update).
+
+    PATCH https://api360.yandex.net/directory/v1/org/{orgId}/departments/{id}
+    Тело (только изменяемые поля): {"name": str, "parentDepartmentId": int,
+    "note": str}. Возвращает dict {'success': bool, ...}.
+    Требуется право OAuth directory:write_departments.
+    """
+    did = str(department_id or '').strip()
+    if not did.isdigit():
+        return {'success': False, 'status': 0,
+                'detail': 'Некорректный id подразделения %r' % department_id,
+                'url': ''}
+    payload: Dict[str, Any] = {}
+    if name is not None:
+        payload['name'] = (name or '').strip()[:150]
+    if parent_department_id is not None:
+        try:
+            payload['parentDepartmentId'] = int(str(parent_department_id).strip())
+        except (TypeError, ValueError):
+            return {'success': False, 'status': 0,
+                    'detail': ('Некорректный parentDepartmentId %r'
+                               % parent_department_id),
+                    'url': ''}
+    if note is not None:
+        payload['note'] = note[:200]
+    if not payload:
+        return {'success': True, 'skipped': True, 'id': did}
+    resp = await request('PATCH', org_path(org_id, f'departments/{did}'),
+                         json=payload,
+                         headers=auth_headers(token or get_write_token()))
+    if resp.status_code not in (200, 201, 204):
+        return {'success': False,
+                'status': resp.status_code,
+                'detail': resp.text[:300],
+                'url': str(resp.request.url)}
+    return {'success': True, 'id': did}
+
+
+async def delete_department(org_id: str, department_id,
+                            token: Optional[str] = None) -> Dict[str, Any]:
+    """Удалить подразделение (DepartmentService_Delete).
+
+    DELETE https://api360.yandex.net/directory/v1/org/{orgId}/departments/{id}
+    Используется только для удаления тестовых подразделений (проверка прав
+    записи); синхронизация структуры НЕ удаляет подразделения в Яндекс 360 —
+    изменения в каталоге 360 выполняются только администратором вручную.
+    """
+    did = str(department_id or '').strip()
+    if not did.isdigit():
+        return {'success': False, 'status': 0,
+                'detail': 'Некорректный id подразделения %r' % department_id,
+                'url': ''}
+    resp = await request('DELETE', org_path(org_id, f'departments/{did}'),
+                         headers=auth_headers(token or get_write_token()))
+    if resp.status_code not in (200, 204):
+        return {'success': False,
+                'status': resp.status_code,
+                'detail': resp.text[:300],
+                'url': str(resp.request.url)}
+    return {'success': True, 'id': did}
+
+

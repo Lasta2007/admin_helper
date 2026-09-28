@@ -43,8 +43,9 @@
 
 import asyncio
 import logging
+import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yandex360
 from database import get_module_settings, set_module_settings
@@ -837,3 +838,543 @@ async def get_ald_pro_tree(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
 def get_ald_pro_last_status() -> Dict[str, Any]:
     status = get_module_settings(ALD_STATUS_KEY)
     return status if isinstance(status, dict) else {}
+
+
+# ===========================================================================
+# ЭТАП 2: синхронизация СТРУКТУРЫ подразделений ALD Pro -> Яндекс 360
+# ===========================================================================
+#
+# Соответствие OU ALD Pro <-> подразделение Яндекс 360 хранится в таблице
+# y360_sync_map (ключ 'dep:<dn>', значение — id подразделения 360).
+#
+# Алгоритм (используются ТОЛЬКО методы из документации API Яндекс 360,
+# https://yandex.ru/dev/api360/doc/ru/):
+#   1. Дерево OU ALD Pro (fetch_ald_pro_tree) и список подразделений 360
+#      (DepartmentService_List) читаются полностью.
+#   2. Обход дерева ALD Pro идёт строго от корней к листьям (BFS): родитель
+#      создаётся раньше детей, поэтому parentDepartmentId всегда известен.
+#   3. Для каждого OU:
+#      * соответствия нет            -> DepartmentService_Create
+#        (POST /directory/v1/org/{orgId}/departments); родителем корневых
+#        OU считается организация (parentDepartmentId = orgId) либо отдел
+#        из настройки parent_department_id;
+#      * имя в 360 отличается        -> DepartmentService_Update (PATCH);
+#      * переезд OU в ALD Pro        -> PATCH parentDepartmentId на новый
+#        родитель 360;
+#      * подразделения в 360, созданные синхронизацией для удалённых в
+#        ALD Pro OU, НЕ удаляются автоматически (безопасно): они помечаются
+#        как "stale" и выводятся в отчёте.
+#   4. Повторное использование: если в 360 уже есть подразделение с таким же
+#      именем внутри того же родителя и оно ни за кем не закреплено — оно
+#      закрепляется за OU (первичная привязка), без создания дубля.
+#
+# Периодический фоновый запуск — run_departments_sync_loop().
+
+DEPT_MAP_PREFIX = 'dep:'          # ключ y360_sync_map: 'dep:<dn>' -> id dept 360
+DEPT_SYNC_STATUS_KEY = 'y360_dept_sync_status'
+DEPT_NOTE_TEMPLATE = 'ALD Pro DN: {dn}'
+
+
+def _db_conn():
+    from database import get_connection
+    return get_connection()
+
+
+def dept_map_load() -> Dict[str, str]:
+    """Загрузить соответствие DN OU ALD Pro -> id подразделения Яндекс 360."""
+    conn = _db_conn()
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM y360_sync_map WHERE key LIKE ?",
+            (DEPT_MAP_PREFIX + '%',)).fetchall()
+    finally:
+        conn.close()
+    return {r[0][len(DEPT_MAP_PREFIX):]: r[1] for r in rows}
+
+
+def dept_map_save(dn: str, dept_id) -> None:
+    """Сохранить одно соответствие 'dep:<dn>' -> id подразделения 360."""
+    conn = _db_conn()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO y360_sync_map(key, value) VALUES(?, ?)",
+            (DEPT_MAP_PREFIX + dn.lower(), str(dept_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def dept_map_delete(dn: str) -> None:
+    conn = _db_conn()
+    try:
+        conn.execute("DELETE FROM y360_sync_map WHERE key=?",
+                     (DEPT_MAP_PREFIX + dn.lower(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ald_flatten_nodes(tree: Dict[str, Any]) -> List[dict]:
+    """Список узлов дерева ALD Pro в порядке BFS (родители раньше детей)."""
+    out: List[dict] = []
+    queue = list(tree.get('roots') or [])
+    while queue:
+        n = queue.pop(0)
+        out.append(n)
+        queue.extend(n.get('children') or [])
+    orphan = tree.get('orphan_node')
+    if orphan is not None:
+        orphan['_is_orphan_service'] = True
+    return out
+
+
+def _y360_parent_id_for(node: dict, roots_ids: set, dept_by_id: dict,
+                       mapping: Dict[str, str], org_id: str,
+                       configured_parent: str) -> Optional[int]:
+    """Вычислить parentDepartmentId для OU по его месту в дереве ALD Pro.
+
+    Корневые OU: настроенный родитель (parent_department_id) или сама
+    организация (orgId). Некорневые: id подразделения-родителя из маппинга;
+    если родителя ещё нет в 360 (не должен случаться при обходе сверху вниз)
+    — fallback на root-родитель.
+    """
+    if node['childID'] == 0 or node['dn'].lower() in roots_ids:
+        pid = _to_int(configured_parent)
+        return pid if pid is not None else _to_int(org_id)
+    parent_dn = node.get('parent_dn') or ''
+    pid = _to_int(mapping.get(parent_dn.lower()))
+    if pid is None:
+        pid = _to_int(configured_parent)
+    if pid is None:
+        pid = _to_int(org_id)
+    return pid
+
+
+def _build_name_index(departments: List[dict]) -> Dict[Tuple[int, str], int]:
+    """Индекс (parentId, нижний регистр имени) -> id подразделения 360.
+
+    Используется для первичной привязки уже существующих подразделений
+    (чтобы не создавать дубли, если структура в 360 собрана вручную).
+    """
+    idx: Dict[Tuple[int, str], int] = {}
+    for d in departments:
+        did = _to_int(d.get('id'))
+        name = (d.get('name') or '').strip().lower()
+        if did is None or not name:
+            continue
+        pid = _to_int(d.get('parentDepartmentId'))
+        idx.setdefault((pid if pid is not None else 0, name), did)
+    return idx
+
+
+async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
+    """Рассчитать план синхронизации структуры (dry-run, без записи).
+
+    Возвращает dict:
+      {'actions': [ <действие>, ... ], 'ald_tree': ..., 'y360_departments': ...,
+       'stats': {...}}
+    Действие: {'type': 'create'|'rename'|'move'|'bind'|'stale'|'noop', ...}
+    """
+    settings = get_ald_sync_settings()
+    org_id = _require_configured()
+    configured_parent = str(settings.get('parent_department_id') or '').strip()
+    if configured_parent and not str(configured_parent).isdigit():
+        raise RuntimeError('Настройка «Родительский департамент в Яндекс 360» '
+                           'должна содержать числовой id подразделения')
+
+    ald_tree, y360_deps = await asyncio.gather(
+        fetch_ald_pro_tree(base_ou_dn), fetch_departments(org_id))
+
+    mapping = dept_map_load()                      # dn(lower) -> id dept 360
+    dept_by_id = {_to_int(d.get('id')): d for d in y360_deps
+                  if _to_int(d.get('id')) is not None}
+    mapped_ids = {int(v) for v in mapping.values() if str(v).isdigit()}
+    name_index = _build_name_index(y360_deps)
+    roots_ids = {n['dn'].lower() for n in (ald_tree.get('roots') or [])}
+
+    actions: List[dict] = []
+    planned: Dict[str, str] = {}                   # dn(lower) -> id (сущ./план)
+    stats = {'create': 0, 'rename': 0, 'move': 0, 'bind': 0, 'stale': 0,
+             'noop': 0, 'errors': 0}
+
+    nodes = [n for n in _ald_flatten_nodes(ald_tree)
+             if not n.get('_is_orphan_service')]
+
+    for node in nodes:
+        dn = node['dn']
+        key = dn.lower()
+        name = (node['name'] or '').strip() or dn.split(',')[0]
+        expected_parent = _y360_parent_id_for(node, roots_ids, dept_by_id,
+                                              {**mapping, **planned}, org_id,
+                                              configured_parent)
+        dept_id = mapping.get(key) or planned.get(key)
+        dept = dept_by_id.get(_to_int(dept_id)) if dept_id else None
+
+        if dept is not None:
+            actual_name = (dept.get('name') or '').strip()
+            actual_parent = _to_int(dept.get('parentDepartmentId'))
+            if actual_name != name:
+                actions.append({'type': 'rename', 'dn': dn, 'name': name,
+                                'id': str(dept_id),
+                                'from': actual_name, 'to': name})
+                stats['rename'] += 1
+            elif (expected_parent is not None and actual_parent is not None
+                    and actual_parent != expected_parent):
+                actions.append({'type': 'move', 'dn': dn, 'name': name,
+                                'id': str(dept_id),
+                                'from': actual_parent, 'to': expected_parent})
+                stats['move'] += 1
+            else:
+                stats['noop'] += 1
+            planned[key] = str(dept_id)
+            continue
+
+        # соответствия нет — ищем свободное подразделение с тем же именем
+        # внутри ожидаемого родителя (первичная привязка вместо дубля)
+        existing_free = name_index.get((expected_parent, name.lower()))
+        if existing_free is not None and existing_free not in mapped_ids \
+                and str(existing_free) not in planned.values():
+            actions.append({'type': 'bind', 'dn': dn, 'name': name,
+                            'id': str(existing_free)})
+            planned[key] = str(existing_free)
+            stats['bind'] += 1
+            continue
+
+        if expected_parent is None:
+            actions.append({'type': 'error', 'dn': dn, 'name': name,
+                            'detail': 'Не удалось определить '
+                                      'parentDepartmentId'})
+            stats['errors'] += 1
+            continue
+
+        actions.append({'type': 'create', 'dn': dn, 'name': name,
+                        'parentDepartmentId': expected_parent})
+        stats['create'] += 1
+        # id станет известен после фактического создания (execute-этап);
+        # здесь placeholder, чтобы дети не остались без родителя в плане
+        planned[key] = ''
+
+    # подразделения 360, закреплённые за несуществующими OU ALD Pro
+    live_dns = {n['dn'].lower() for n in nodes}
+    for dn_l, dep_id in mapping.items():
+        if dn_l in live_dns:
+            continue
+        dept = dept_by_id.get(_to_int(dep_id))
+        if dept is None:
+            # в 360 удалено вручную — чистим маппинг (в плане)
+            actions.append({'type': 'unmap', 'dn': dn_l, 'id': dep_id,
+                            'detail': 'подразделение отсутствует в Яндекс 360'})
+            continue
+        actions.append({'type': 'stale', 'dn': dn_l, 'id': dep_id,
+                        'name': dept.get('name')})
+        stats['stale'] += 1
+
+    return {
+        'actions': actions,
+        'stats': stats,
+        'ald_base_dn': ald_tree.get('base_dn'),
+        'ald_stats': ald_tree.get('stats'),
+        'y360_departments_total': len(y360_deps),
+        'org_id': org_id,
+    }
+
+
+async def execute_departments_sync(base_ou_dn: Optional[str] = None,
+                                   dry_run: bool = False) -> Dict[str, Any]:
+    """Синхронизировать структуру подразделений ALD Pro -> Яндекс 360.
+
+    dry_run=True — только план без изменения каталога 360.
+    Результат каждой операции попадает в 'results'; статус сохраняется в БД
+    (для отображения в UI и диагностики фонового задачи).
+    """
+    started = datetime.now().isoformat(timespec='seconds')
+    summary = {'created': 0, 'renamed': 0, 'moved': 0, 'bound': 0,
+               'noop': 0, 'stale': 0, 'errors': 0}
+    results: List[dict] = []
+    error_text = None
+    org_id = None
+    base_dn = None
+
+    try:
+        settings = get_ald_sync_settings()
+        org_id = _require_configured()
+        write_token = yandex360.get_write_token()
+        if not write_token:
+            raise RuntimeError('Не задан OAuth-токен (нужны права '
+                               'directory:read_departments и '
+                               'directory:write_departments)')
+
+        ald_tree, y360_deps = await asyncio.gather(
+            fetch_ald_pro_tree(base_ou_dn), fetch_departments(org_id))
+        base_dn = ald_tree.get('base_dn')
+
+        mapping = dept_map_load()
+        dept_by_id = {_to_int(d.get('id')): d for d in y360_deps
+                      if _to_int(d.get('id')) is not None}
+        mapped_ids = {int(v) for v in mapping.values() if str(v).isdigit()}
+        name_index = _build_name_index(y360_deps)
+        roots_ids = {n['dn'].lower() for n in (ald_tree.get('roots') or [])}
+        configured_parent = str(settings.get('parent_department_id') or '').strip()
+
+        nodes = [n for n in _ald_flatten_nodes(ald_tree)
+                 if not n.get('_is_orphan_service')]
+
+        # --- удаления из 360 вручную: чистим устаревший маппинг -------------
+        live_dns = {n['dn'].lower() for n in nodes}
+        for dn_l, dep_id in list(mapping.items()):
+            if dn_l in live_dns:
+                continue
+            if _to_int(dep_id) not in dept_by_id:
+                dept_map_delete(dn_l)
+                mapping.pop(dn_l, None)
+                results.append({'type': 'unmap', 'dn': dn_l, 'id': dep_id,
+                                'success': True,
+                                'detail': 'маппинг удалён: подразделения нет в 360'})
+
+        # --- обход OU сверху вниз -------------------------------------------
+        for node in nodes:
+            dn = node['dn']
+            key = dn.lower()
+            name = (node['name'] or '').strip() or dn.split(',')[0]
+            expected_parent = _y360_parent_id_for(
+                node, roots_ids, dept_by_id, mapping, org_id, configured_parent)
+            if expected_parent is None:
+                summary['errors'] += 1
+                results.append({'type': 'error', 'dn': dn, 'name': name,
+                                'success': False,
+                                'detail': 'Не определён parentDepartmentId'})
+                continue
+
+            dept_id = _to_int(mapping.get(key))
+            dept = dept_by_id.get(dept_id) if dept_id is not None else None
+
+            if dept is not None:
+                actual_name = (dept.get('name') or '').strip()
+                actual_parent = _to_int(dept.get('parentDepartmentId'))
+                if actual_name != name and not dry_run:
+                    r = await yandex360.update_department(
+                        org_id, dept_id, name=name,
+                        token=write_token)
+                    results.append({'type': 'rename', 'dn': dn, 'id': str(dept_id),
+                                    'from': actual_name, 'to': name, **r})
+                    if r.get('success'):
+                        dept['name'] = name
+                        summary['renamed'] += 1
+                    else:
+                        summary['errors'] += 1
+                        continue
+                elif actual_name != name:
+                    results.append({'type': 'rename', 'dn': dn, 'id': str(dept_id),
+                                    'from': actual_name, 'to': name,
+                                    'success': True, 'planned': True})
+                    summary['renamed'] += 1
+                if actual_parent is not None and actual_parent != expected_parent:
+                    if not dry_run:
+                        r = await yandex360.update_department(
+                            org_id, dept_id, parent_department_id=expected_parent,
+                            token=write_token)
+                        results.append({'type': 'move', 'dn': dn,
+                                        'id': str(dept_id),
+                                        'from': actual_parent,
+                                        'to': expected_parent, **r})
+                        if r.get('success'):
+                            dept['parentDepartmentId'] = expected_parent
+                            summary['moved'] += 1
+                        else:
+                            summary['errors'] += 1
+                    else:
+                        results.append({'type': 'move', 'dn': dn,
+                                        'id': str(dept_id),
+                                        'from': actual_parent,
+                                        'to': expected_parent,
+                                        'success': True, 'planned': True})
+                        summary['moved'] += 1
+                mapping[key] = str(dept_id)
+                continue
+
+            # привязка существующего свободного подразделения (без дубля)
+            free_id = name_index.get((expected_parent, name.lower()))
+            if free_id is not None and free_id not in mapped_ids:
+                if not dry_run:
+                    dept_map_save(dn, free_id)
+                mapping[key] = str(free_id)
+                mapped_ids.add(free_id)
+                summary['bound'] += 1
+                results.append({'type': 'bind', 'dn': dn, 'name': name,
+                                'id': str(free_id), 'success': True,
+                                'planned': dry_run})
+                continue
+
+            # создание нового подразделения (DepartmentService_Create)
+            if dry_run:
+                summary['create'] += 1
+                results.append({'type': 'create', 'dn': dn, 'name': name,
+                                'parentDepartmentId': expected_parent,
+                                'success': True, 'planned': True})
+                continue
+            r = await yandex360.create_department(
+                org_id, name=name, parent_department_id=expected_parent,
+                note=DEPT_NOTE_TEMPLATE.format(dn=dn), token=write_token)
+            res = {'type': 'create', 'dn': dn, 'name': name,
+                   'parentDepartmentId': expected_parent, **r}
+            results.append(res)
+            if r.get('success') and r.get('id'):
+                new_id = _to_int(r['id'])
+                dept_by_id[new_id] = {'id': new_id, 'name': name,
+                                      'parentDepartmentId': expected_parent}
+                mapped_ids.add(new_id)
+                name_index[(expected_parent, name.lower())] = new_id
+                dept_map_save(dn, new_id)
+                mapping[key] = str(new_id)
+                summary['created'] += 1
+            else:
+                summary['errors'] += 1
+                logger.error('Яндекс 360: не удалось создать подразделение '
+                             '%r (родитель %s): %s', name, expected_parent,
+                             r.get('detail'))
+                # дети останутся без родителя — фиксируем ошибку и идём далее
+                # (fallback-родитель в _y360_parent_id_for не даст упасть)
+
+        # --- устаревшие (OU удалён из ALD Pro, подразделение живёт в 360) ----
+        for dn_l, dep_id in list(mapping.items()):
+            if dn_l in live_dns:
+                continue
+            dept = dept_by_id.get(_to_int(dep_id))
+            if dept is not None:
+                summary['stale'] += 1
+                results.append({'type': 'stale', 'dn': dn_l, 'id': dep_id,
+                                'name': dept.get('name'), 'success': True,
+                                'detail': 'OU отсутствует в ALD Pro — '
+                                          'подразделение оставлено в 360'})
+
+        report_lines = render_dept_sync_report(results, summary, base_dn,
+                                               dry_run)
+    except Exception as e:
+        logger.exception('Ошибка синхронизации подразделений ALD Pro -> Яндекс 360')
+        error_text = str(e)
+        report_lines = f'Ошибка: {e}'
+
+    status = {
+        'success': error_text is None,
+        'started': started,
+        'finished': datetime.now().isoformat(timespec='seconds'),
+        'dry_run': bool(dry_run),
+        'org_id': org_id,
+        'base_dn': base_dn,
+        'summary': summary,
+        'error': error_text,
+    }
+    try:
+        set_module_settings(DEPT_SYNC_STATUS_KEY, status)
+    except Exception as e:
+        logger.warning('Не удалось сохранить статус синхронизации: %s', e)
+
+    return {'success': error_text is None, 'dry_run': bool(dry_run),
+            'summary': summary, 'results': results,
+            'text': report_lines, 'error': error_text, 'status': status}
+
+
+def render_dept_sync_report(results: List[dict], summary: Dict[str, int],
+                            base_dn: str, dry_run: bool) -> str:
+    """Человекочитаемый отчёт синхронизации структуры подразделений."""
+    lines = [f"Синхронизация структуры подразделений (базовый OU: {base_dn or '—'})"
+             + (' — ПРЕДПРОСМОТР, без изменений' if dry_run else '')]
+    lines.append('Итог: создано=%(created)d, переименовано=%(renamed)d, '
+                 'перемещено=%(moved)d, привязано=%(bound)d, '
+                 'устаревших=%(stale)d, ошибок=%(errors)d' % summary)
+    interesting = [r for r in results
+                   if r.get('type') in ('create', 'rename', 'move', 'bind',
+                                         'stale', 'error', 'unmap')
+                   or r.get('success') is False]
+    if not interesting:
+        lines.append('Изменений нет — структура Яндекс 360 соответствует ALD Pro.')
+    for r in interesting:
+        mark = '✓' if r.get('success') else '✗'
+        t = r.get('type')
+        if t == 'create':
+            lines.append(f"{mark} СОЗДАНО: {r.get('name')} "
+                         f"(родитель id={r.get('parentDepartmentId')}, OU={r.get('dn')})"
+                         + ('' if r.get('planned')
+                            else f" -> id={r.get('id')}" if r.get('id') else
+                            f" ОШИБКА: {(r.get('detail') or '')[:200]}"))
+        elif t == 'rename':
+            lines.append(f"{mark} ПЕРЕИМЕНОВАНО: id={r.get('id')}: "
+                         f"«{r.get('from')}» -> «{r.get('to')}»")
+        elif t == 'move':
+            lines.append(f"{mark} ПЕРЕМЕЩЕНО: id={r.get('id')}: "
+                         f"родитель {r.get('from')} -> {r.get('to')}")
+        elif t == 'bind':
+            lines.append(f"{mark} ПРИВЯЗАНО: существующее подразделение "
+                         f"id={r.get('id')} -> OU {r.get('dn')}")
+        elif t == 'stale':
+            lines.append(f"! БЕЗ ПАРЫ В ALD PRO: id={r.get('id')} "
+                         f"«{r.get('name')}» (OU {r.get('dn')} удалён) — "
+                         f"в Яндекс 360 сохранено")
+        elif t == 'unmap':
+            lines.append(f"{mark} МАППИНГ УДАЛЁН: id={r.get('id')} "
+                         f"(подразделения нет в Яндекс 360)")
+        else:
+            lines.append(f"✗ ОШИБКА: {r.get('dn')}: "
+                         f"{(r.get('detail') or '')[:200]}")
+    return '\n'.join(lines)
+
+
+def get_dept_sync_last_status() -> Dict[str, Any]:
+    status = get_module_settings(DEPT_SYNC_STATUS_KEY)
+    return status if isinstance(status, dict) else {}
+
+
+def dept_sync_is_running() -> bool:
+    return bool(_dept_sync_lock.locked())
+
+
+# Лок защиты от параллельных запусков синхронизации (фон + ручная кнопка).
+_dept_sync_lock = threading.Lock()
+
+
+async def run_departments_sync_once(base_ou_dn: Optional[str] = None) -> Dict[str, Any]:
+    """Один полный цикл синхронизации структуры с защитой от параллельных запусков."""
+    if _dept_sync_lock.locked():
+        return {'success': False,
+                'error': 'Синхронизация уже выполняется — повторный запуск '
+                        'отменён',
+                'busy': True}
+    with _dept_sync_lock:
+        return await execute_departments_sync(base_ou_dn)
+
+
+async def run_departments_sync_loop(stop_event: asyncio.Event) -> None:
+    """Фоновая задача: периодически синхронизировать структуру подразделений.
+
+    Интервал — настройка sync_interval_minutes (минимум 1 мин). Завершается
+    по внешнему stop_event (остановка приложения FastAPI).
+    """
+    logger.info('[y360-dept-sync] Фоновая задача синхронизации запущена')
+    while not stop_event.is_set():
+        interval = 60
+        try:
+            interval = max(1, int(get_ald_sync_settings()
+                                  .get('sync_interval_minutes') or 60))
+            settings_ready = (str(get_settings().get('org_id') or '').strip()
+                              and str(get_settings().get('oauth_token') or '').strip()
+                              and str(get_ald_sync_settings()
+                                      .get('root_ou_dn') or '').strip())
+            if not settings_ready:
+                logger.debug('[y360-dept-sync] Настройки интеграции неполные — '
+                             'пропуск цикла')
+            else:
+                res = await run_departments_sync_once()
+                s = res.get('summary') or {}
+                logger.info('[y360-dept-sync] Цикл завершён: success=%s %s',
+                            res.get('success'), s)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error('[y360-dept-sync] Ошибка фонового цикла: %s', e)
+        try:
+            await asyncio.wait_for(stop_event.wait,
+                                   timeout=interval * 60)
+            break  # stop_event установлен — выходим
+        except asyncio.TimeoutError:
+            continue
+    logger.info('[y360-dept-sync] Фоновая задача остановлена')

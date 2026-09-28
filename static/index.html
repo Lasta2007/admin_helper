@@ -165,6 +165,28 @@
       <div id="y360AldTreeStatus" style="color:#666; margin-bottom:6px;"></div>
       <pre id="y360AldTreeText" class="y360-tree-box">Укажите базовый OU и нажмите «Построить дерево ALD Pro» — здесь появится структура подразделений от базового OU с пользователями.</pre>
       <div id="y360AldTreeHtml" class="hidden"></div>
+
+      <h3>Синхронизация структуры подразделений (ALD Pro &rarr; Яндекс 360)</h3>
+      <small style="color:#888;">Подразделения Яндекс 360 создаются/переименовываются/перемещаются только методами официального API Яндекс&nbsp;360
+      (DepartmentService_List / Create / Update, хост api360.yandex.net). Структура повторяет дерево OU ALD Pro
+      от базового OU. Удаления подразделений в Яндекс&nbsp;360 не выполняется — «осиротевшие» отделы выводятся в отчёте.</small>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+        <div style="display:flex; flex-direction:column;">
+          <label>Родительский департамент Яндекс 360 для корневых OU (id, пусто = организация)</label>
+          <input id="y360DeptParentInput" type="text" placeholder="например, 1000000001" style="width: 320px;">
+        </div>
+        <div style="display:flex; flex-direction:column;">
+          <label>Интервал фоновой синхронизации, минут</label>
+          <input id="y360DeptIntervalInput" type="number" min="1" value="60" style="width: 120px;">
+        </div>
+        <button id="y360DeptSettingsSaveBtn">Сохранить настройки</button>
+      </div>
+      <div class="toolbar" style="margin:10px 0 6px;">
+        <button id="y360DeptPlanBtn">Предпросмотр плана</button>
+        <button id="y360DeptRunBtn">Синхронизировать сейчас</button>
+      </div>
+      <div id="y360DeptSyncStatus" style="color:#666; margin-bottom:6px;"></div>
+      <pre id="y360DeptSyncText" class="y360-tree-box">Нажмите «Предпросмотр плана», чтобы увидеть изменения, которые будут выполнены в Яндекс 360 (без записи), или «Синхронизировать сейчас» для запуска синхронизации.</pre>
     </div>
   </div>
 </div>
