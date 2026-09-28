@@ -1125,31 +1125,53 @@ async def api_test_yandex360_connection(test_data: Yandex360ConnectionTest):
                        test_data.oauth_token or '').strip()
         if write_token and test_data.org_id:
             try:
-                wres = await yandex360.create_department(
-                    test_data.org_id,
-                    name='__admin_helper_write_test__',
-                    token=write_token)
-                if wres.get('success'):
-                    result['write_access'] = True
-                    new_id = wres.get('id')
-                    # удаляем тестовое подразделение (если доступно)
-                    if new_id:
-                        try:
-                            await yandex360.request(
-                                'DELETE',
-                                yandex360.org_path(test_data.org_id,
-                                                   f'departments/{new_id}'),
-                                headers={'Authorization':
-                                         f'OAuth {write_token}'})
-                        except Exception:
-                            pass
-                else:
-                    result['write_access'] = False
+                # DepartmentService_Create требует обязательный parentId —
+                # id существующего подразделения. Берём первое подразделение
+                # из DepartmentService_List (в пустой организации это
+                # стандартное «Все сотрудники», обычно id=1).
+                parent_id = None
+                try:
+                    deps = await sync360_new.fetch_departments(
+                        test_data.org_id)
+                except Exception:
+                    deps = []
+                for d in deps or []:
+                    did = str(d.get('id') or '').strip()
+                    if did.isdigit() and int(did) > 0:
+                        parent_id = did
+                        break
+                if not parent_id:
+                    result['write_access'] = None
                     result['write_error'] = (
-                        "Токен записи не пройден (HTTP %s, %s): %s"
-                        % (wres.get('status'),
-                           wres.get('url') or yandex360.primary_base_url(),
-                           (wres.get('detail') or '')[:200]))
+                        'Не найдено ни одного подразделения-родителя для '
+                        'проверки права записи (DepartmentService_List пуст).')
+                else:
+                    wres = await yandex360.create_department(
+                        test_data.org_id,
+                        name='__admin_helper_write_test__',
+                        parent_department_id=parent_id,
+                        token=write_token)
+                    if wres.get('success'):
+                        result['write_access'] = True
+                        new_id = wres.get('id')
+                        # удаляем тестовое подразделение (если доступно)
+                        if new_id:
+                            try:
+                                await yandex360.request(
+                                    'DELETE',
+                                    yandex360.org_path(test_data.org_id,
+                                                       f'departments/{new_id}'),
+                                    headers={'Authorization':
+                                             f'OAuth {write_token}'})
+                            except Exception:
+                                pass
+                    else:
+                        result['write_access'] = False
+                        result['write_error'] = (
+                            "Токен записи не пройден (HTTP %s, %s): %s"
+                            % (wres.get('status'),
+                               wres.get('url') or yandex360.primary_base_url(),
+                               (wres.get('detail') or '')[:200]))
             except Exception as e:
                 result['write_access'] = None
                 result['write_error'] = str(e)[:200]

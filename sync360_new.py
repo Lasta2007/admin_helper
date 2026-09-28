@@ -885,7 +885,6 @@ def get_ald_pro_last_status() -> Dict[str, Any]:
 
 DEPT_MAP_PREFIX = 'dep:'          # ключ y360_sync_map: 'dep:<dn>' -> id dept 360
 DEPT_SYNC_STATUS_KEY = 'y360_dept_sync_status'
-DEPT_NOTE_TEMPLATE = 'ALD Pro DN: {dn}'
 
 
 def _db_conn():
@@ -1392,9 +1391,11 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
                                 'parentDepartmentId': expected_parent,
                                 'success': True, 'planned': True})
                 continue
+            # DepartmentService_Create: тело строго {"name", "parentId"}
+            # (согласно документации) — никаких недокументированных полей.
             r = await yandex360.create_department(
                 org_id, name=name, parent_department_id=expected_parent,
-                note=DEPT_NOTE_TEMPLATE.format(dn=dn), token=write_token)
+                token=write_token)
             res = {'type': 'create', 'dn': dn, 'name': name,
                    'parentDepartmentId': expected_parent, **r}
             results.append(res)
