@@ -187,6 +187,25 @@
       </div>
       <div id="y360DeptSyncStatus" style="color:#666; margin-bottom:6px;"></div>
       <pre id="y360DeptSyncText" class="y360-tree-box">Нажмите «Предпросмотр плана», чтобы увидеть изменения, которые будут выполнены в Яндекс 360 (без записи), или «Синхронизировать сейчас» для запуска синхронизации.</pre>
+
+      <h3>Выгрузка структуры подразделений из Яндекс 360</h3>
+      <small style="color:#888;">Читает подразделения Яндекс&nbsp;360 официальным методом DepartmentService_List
+      (GET /directory/v1/org/{orgId}/departments) и формирует файл со структурой: каждый элемент содержит
+      <b>id</b> подразделения и <b>parentID</b> (для корневых подразделений parentID = 0 — родитель является сама организация).</small>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+        <div style="display:flex; flex-direction:column;">
+          <label>Формат выгрузки</label>
+          <select id="y360ExportFormatSelect" style="width: 160px;">
+            <option value="json" selected>JSON</option>
+            <option value="csv">CSV</option>
+            <option value="text">Текст</option>
+          </select>
+        </div>
+        <button id="y360DeptExportBtn">Выгрузить структуру Яндекс 360</button>
+        <button id="y360DeptExportDownloadBtn" disabled>Скачать файл</button>
+      </div>
+      <div id="y360ExportStatus" style="color:#666; margin:6px 0;"></div>
+      <pre id="y360ExportText" class="y360-tree-box">Нажмите «Выгрузить структуру Яндекс 360» — здесь появится список подразделений с id и parentID. Кнопка «Скачать файл» сохранит выгрузку в выбранном формате.</pre>
     </div>
   </div>
 </div>
@@ -209,6 +228,6 @@
 <script src="https://cdn.datatables.net/3.0.1/js/dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/columncontrol/2.0.0/js/dataTables.columnControl.min.js"></script>
 <script src="https://cdn.datatables.net/columncontrol/2.0.0/js/columnControl.dataTables.min.js"></script>
-<script src="js/app.js?v=20260928-1"></script>
+<script src="js/app.js?v=20260928-2"></script>
 </body>
 </html>
