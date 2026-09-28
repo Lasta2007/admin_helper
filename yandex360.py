@@ -50,12 +50,97 @@ helper-е resolve_base_url(), который использует request().
 это признак того, что запрос ушёл не на api360.yandex.net, либо у токена нет
 права directory:write_departments.
 """
+import json
 import logging
+import urllib.parse
 from typing import Dict, Any, Optional
 
 import httpx
 
 logger = logging.getLogger('admin_helper')
+
+
+def _sanitize_url(url: str) -> str:
+    """Декодировать URL для читаемого вида в логах.
+
+    Пути ALD Pro содержат закодированный DN (ou%3D%D0%A1...), который в
+    логах нечитаем; раскодируем percent-encoding обратно в юникод.
+    Токены авторизации в URL быть не должно — на всякий случай вырезаем
+    значения параметров access_token/token/oauth_token.
+    """
+    if not url:
+        return ''
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        netloc = parsed.netloc
+        path = urllib.parse.unquote(parsed.path)
+        pairs = []
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            if k.lower() in ('access_token', 'token', 'oauth_token'):
+                v = '***'
+            pairs.append((k, urllib.parse.unquote(v)))
+        query = urllib.parse.urlencode(pairs) if pairs else ''
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, path, query, ''))
+    except Exception:
+        return url
+
+
+def _redact_payload(payload: Any) -> Any:
+    """Убрать чувствительные поля из тела запроса перед логированием."""
+    if isinstance(payload, dict):
+        out = {}
+        for k, v in payload.items():
+            lk = str(k).lower()
+            if any(s in lk for s in ('token', 'password', 'secret')):
+                out[k] = '***'
+            else:
+                out[k] = _redact_payload(v)
+        return out
+    if isinstance(payload, list):
+        return [_redact_payload(x) for x in payload]
+    return payload
+
+
+def _log_api_call(method: str, url: str, kwargs: dict) -> None:
+    """Записать в лог адрес запроса с параметрами и тело (без токена)."""
+    parts = [f"API 360 >>> {method} {_sanitize_url(url)}"]
+    # query-параметры httpx (params=...) тоже попадают в лог
+    params = kwargs.get('params')
+    if params:
+        try:
+            qs = urllib.parse.urlencode(
+                {k: ('***' if str(k).lower() in
+                     ('access_token', 'token', 'oauth_token') else v)
+                 for k, v in dict(params).items()})
+            parts.append(f"params={_sanitize_url('http://x/?' + qs)[11:]}")
+        except Exception:
+            parts.append(f"params={params!r}")
+    body = kwargs.get('json')
+    if body is None and 'content' in kwargs:
+        body = kwargs.get('content')
+    if body is not None:
+        try:
+            body_txt = json.dumps(_redact_payload(body), ensure_ascii=False)
+        except Exception:
+            body_txt = str(body)
+        parts.append(f"body={body_txt}")
+    logger.info(' | '.join(parts))
+
+
+def _log_api_response(method: str, url: str, resp: httpx.Response) -> None:
+    """Записать ответ API: статус и текст (обрезанный) при ошибке."""
+    status = getattr(resp, 'status_code', 0)
+    if status >= 400:
+        text = ''
+        try:
+            text = resp.text[:500]
+        except Exception:
+            pass
+        logger.warning("API 360 <<< %s %s -> HTTP %s: %s",
+                      method, _sanitize_url(url), status, text)
+    else:
+        logger.debug("API 360 <<< %s %s -> HTTP %s",
+                     method, _sanitize_url(url), status)
 
 # Хосты API Яндекс 360 (раздел "Доступ к API" документации
 # https://yandex.ru/dev/api360/doc/ru/).
@@ -222,8 +307,22 @@ async def request(method: str, path: str, *, base_url: str = None,
         merged.update(auth_headers(token))
         kwargs['headers'] = merged
     first = resolve_base_url(path, method, base_url)
-    return await httpx.AsyncClient(base_url=first, timeout=DEFAULT_TIMEOUT).request(
-        method, path, **kwargs)
+    full_url = first + path
+    params = kwargs.get('params')
+    if params:
+        try:
+            sep = '&' if '?' in full_url else '?'
+            full_url = full_url + sep + urllib.parse.urlencode(params)
+        except Exception:
+            pass
+    _log_api_call(method, full_url, kwargs)
+    client = httpx.AsyncClient(base_url=first, timeout=DEFAULT_TIMEOUT)
+    try:
+        resp = await client.request(method, path, **kwargs)
+    finally:
+        await client.aclose()
+    _log_api_response(method, str(resp.url) or full_url, resp)
+    return resp
 
 
 def _host_of(url: str) -> str:
@@ -404,6 +503,16 @@ def get_write_token() -> Optional[str]:
     return (_y360_settings.get('oauth_token') or '').strip() or None
 
 
+def _is_required_field_error(text: str, field: str) -> bool:
+    """Проверить, что ответ API — 400 «поле "<field>" является обязательным»."""
+    if not text:
+        return False
+    low = text.lower()
+    has_field = (f'поле "{field}"' in low) or (f'"{field}"' in low and 'поле' in low) \
+        or (f'property "{field}"' in low) or (f'"{field}"' in low and 'required' in low)
+    return has_field and ('обязательн' in low or 'required' in low)
+
+
 async def create_department(org_id: str, name: str, parent_department_id=None,
                             note: str = '',
                             token: Optional[str] = None) -> Dict[str, Any]:
@@ -464,11 +573,26 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
     resp = await request('POST', org_path(org_id, 'departments'),
                          json=payload,
                          headers=auth_headers(token or get_write_token()))
+    # Совместимость с разными версиями схемы DepartmentService_Create:
+    # документация описывает поле parentDepartmentId, но часть эндпоинтов
+    # (disk-api-*) требует parentId — об этом сообщает HTTP 400 вида
+    # «Ошибка проверки поля "parentId": Это поле является обязательным».
+    # В этом случае повторяем тот же POST с именем поля parentId.
+    if (resp.status_code == 400 and 'parentId' in resp.text
+            and _is_required_field_error(resp.text, 'parentId')):
+        alt_payload = dict(payload)
+        alt_payload['parentId'] = alt_payload.pop('parentDepartmentId')
+        logger.info('Яндекс 360: POST /departments отклонён (требуется поле '
+                    '"parentId") — повторяю запрос с альтернативным именем '
+                    'поля родителя')
+        resp = await request('POST', org_path(org_id, 'departments'),
+                             json=alt_payload,
+                             headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201):
         return {'success': False,
                 'status': resp.status_code,
                 'detail': resp.text[:300],
-                'url': str(resp.request.url)}
+                'url': str(resp.url)}
     body = resp.json() or {}
     dep = body.get('department') or body
     new_id = dep.get('id') or body.get('id')
@@ -509,11 +633,24 @@ async def update_department(org_id: str, department_id, name: str = None,
     resp = await request('PATCH', org_path(org_id, f'departments/{did}'),
                          json=payload,
                          headers=auth_headers(token or get_write_token()))
+    # Совместимость со схемой parentId (см. create_department): если PATCH
+    # с parentDepartmentId отклонён требованием поля parentId — повторяем с
+    # parentId.
+    if ('parentDepartmentId' in payload and resp.status_code == 400
+            and _is_required_field_error(resp.text, 'parentId')):
+        alt_payload = dict(payload)
+        alt_payload['parentId'] = alt_payload.pop('parentDepartmentId')
+        logger.info('Яндекс 360: PATCH /departments/%s отклонён (требуется '
+                    'поле "parentId") — повторяю запрос с альтернативным '
+                    'именем поля родителя', did)
+        resp = await request('PATCH', org_path(org_id, f'departments/{did}'),
+                             json=alt_payload,
+                             headers=auth_headers(token or get_write_token()))
     if resp.status_code not in (200, 201, 204):
         return {'success': False,
                 'status': resp.status_code,
                 'detail': resp.text[:300],
-                'url': str(resp.request.url)}
+                'url': str(resp.url)}
     return {'success': True, 'id': did}
 
 
@@ -537,7 +674,7 @@ async def delete_department(org_id: str, department_id,
         return {'success': False,
                 'status': resp.status_code,
                 'detail': resp.text[:300],
-                'url': str(resp.request.url)}
+                'url': str(resp.url)}
     return {'success': True, 'id': did}
 
 
