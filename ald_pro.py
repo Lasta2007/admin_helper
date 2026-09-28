@@ -4,9 +4,51 @@
 import httpx
 import logging
 from typing import Dict, Any, Optional
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 logger = logging.getLogger('admin_helper')
+
+
+def _decode_url_for_log(url: str) -> str:
+    """Декодировать percent-encoded URL для читаемого вывода в лог.
+
+    Пути ALD Pro содержат закодированный DN вида
+    /api/ds/organizational-units/ou%3D%D0%A1%D0%B5%D0%BA%D1%80%D0%B5%D1%82...
+    который в логах нечитаем; приводим его к виду
+    /api/ds/organizational-units/ou=Секретариат,ou=Управление,...
+    """
+    if not url:
+        return ''
+    try:
+        parts = urlsplit(url)
+        return urlunsplit((parts.scheme, parts.netloc,
+                           unquote(parts.path), unquote(parts.query), ''))
+    except Exception:
+        return unquote(url)
+
+
+class _LoggingAsyncClient(httpx.AsyncClient):
+    """httpx.AsyncClient с логированием каждого запроса (метод + полный
+    адрес с параметрами в ДЕКОДИРОВАННОМ читаемом виде). Cookies/сессия
+    ALD Pro в лог не пишутся."""
+
+    async def send(self, request, **kwargs):
+        logger.info("ALD Pro >>> %s %s",
+                    request.method, _decode_url_for_log(str(request.url)))
+        resp = await super().send(request, **kwargs)
+        if resp.status_code >= 400:
+            try:
+                text = resp.text[:300]
+            except Exception:
+                text = ''
+            logger.warning("ALD Pro <<< %s -> HTTP %s: %s",
+                           _decode_url_for_log(str(request.url)),
+                           resp.status_code, text)
+        else:
+            logger.debug("ALD Pro <<< %s -> HTTP %s",
+                         _decode_url_for_log(str(request.url)),
+                         resp.status_code)
+        return resp
 
 
 def _encode_dn(dn: str) -> str:
@@ -166,7 +208,7 @@ async def _get_authenticated_client() -> Optional[httpx.AsyncClient]:
         return None
 
     base_url = _aldpro_settings['url'].rstrip('/')
-    client = httpx.AsyncClient(
+    client = _LoggingAsyncClient(
         base_url=base_url,
         verify=False,
         timeout=30.0,

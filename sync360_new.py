@@ -209,6 +209,19 @@ def _to_int(value) -> Optional[int]:
         return None
 
 
+def _dep_parent_id(dep: dict) -> Optional[int]:
+    """Родитель подразделения из ответа DepartmentService_List.
+
+    Разные версии эндпоинта отдают поле то как parentDepartmentId, то как
+    parentId — читаем оба, чтобы синхронизация и выгрузка работали с любой
+    схемой ответа.
+    """
+    pid = _to_int(dep.get('parentDepartmentId'))
+    if pid is None:
+        pid = _to_int(dep.get('parentId'))
+    return pid
+
+
 def _user_dept_id(user: dict) -> Optional[int]:
     """Определить id подразделения сотрудника по ответу UserService_List.
 
@@ -263,7 +276,7 @@ def build_department_tree(departments: List[dict], users: List[dict],
         node = {
             'id': did,
             'name': (d.get('name') or '(без названия)').strip(),
-            'parentIdRaw': _to_int(d.get('parentDepartmentId')),
+            'parentIdRaw': _dep_parent_id(d),
             'parentId': 0,
             'isRoot': False,
             'isOrgRoot': False,
@@ -999,7 +1012,7 @@ def find_y360_root_department(departments: List[dict], org_id) -> Optional[int]:
              if _to_int(d.get('id')) is not None}
 
     def _is_top_level(d: dict) -> bool:
-        pid = _to_int(d.get('parentDepartmentId'))
+        pid = _dep_parent_id(d)
         return pid is None or pid == 0 or (org is not None and pid == org)
 
     # 1) стандартный корень «Все сотрудники»
@@ -1049,7 +1062,7 @@ def _build_name_index(departments: List[dict]) -> Dict[Tuple[int, str], int]:
         name = (d.get('name') or '').strip().lower()
         if did is None or not name:
             continue
-        pid = _to_int(d.get('parentDepartmentId'))
+        pid = _dep_parent_id(d)
         idx.setdefault((pid if pid is not None else 0, name), did)
     return idx
 
@@ -1118,7 +1131,7 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
 
         if dept is not None:
             actual_name = (dept.get('name') or '').strip()
-            actual_parent = _to_int(dept.get('parentDepartmentId'))
+            actual_parent = _dep_parent_id(dept)
             if actual_name != name:
                 actions.append({'type': 'rename', 'dn': dn, 'name': name,
                                 'id': str(dept_id),
@@ -1196,7 +1209,7 @@ async def plan_departments_sync(base_ou_dn: Optional[str] = None) -> Dict[str, A
         expected_parent = _y360_parent_id_for(
             node, roots_ids, dept_by_id, full_map, org_id, configured_parent,
             y360_root_id)
-        actual_parent = _to_int(dept.get('parentDepartmentId'))
+        actual_parent = _dep_parent_id(dept)
         if (expected_parent is None or actual_parent is None
                 or actual_parent == expected_parent
                 or not y360_parent_exists(expected_parent, dept_by_id, org_id)):
@@ -1374,7 +1387,7 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
 
             # создание нового подразделения (DepartmentService_Create)
             if dry_run:
-                summary['create'] += 1
+                summary['created'] += 1
                 results.append({'type': 'create', 'dn': dn, 'name': name,
                                 'parentDepartmentId': expected_parent,
                                 'success': True, 'planned': True})
@@ -1420,7 +1433,7 @@ async def execute_departments_sync(base_ou_dn: Optional[str] = None,
             expected_parent = _y360_parent_id_for(
                 node, roots_ids, dept_by_id, mapping, org_id, configured_parent,
                 y360_root_id)
-            actual_parent = _to_int(dept.get('parentDepartmentId'))
+            actual_parent = _dep_parent_id(dept)
             if (expected_parent is None or actual_parent is None
                     or actual_parent == expected_parent
                     or not y360_parent_exists(expected_parent, dept_by_id,
@@ -1552,8 +1565,11 @@ def _y360_parent_id_for_export(dep: dict, org_id) -> int:
     В API 360 родителем подразделений верхнего уровня является сама
     организация (parentDepartmentId == orgId). В выгрузке для корневых
     подразделений parentID = 0, как и в визуальном дереве модуля.
+    Ответы разных версий API могут содержать поле parentId — учитываем оба.
     """
-    pid = _to_int(dep.get('parentDepartmentId'))
+    pid = _dep_parent_id(dep)
+    if pid is None:
+        pid = _to_int(dep.get('parentId'))
     oid = _to_int(org_id)
     if pid is None or pid == 0 or (oid is not None and pid == oid):
         return 0
