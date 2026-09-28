@@ -453,35 +453,6 @@ def save_host(network_id: int,
     conn.close()
 
 
-def update_online(network_id: int,
-                  ip: str,
-                  online: int,
-                  last_ping: str,
-                  hostname: str = '',
-                  mac: str = ''):
-    conn = get_connection()
-
-    conn.execute("""
-        UPDATE hosts
-        SET online=?,
-            last_ping=?,
-            hostname=?,
-            mac=?
-        WHERE network_id=?
-          AND ip=?
-    """, (
-        online,
-        last_ping,
-        hostname,
-        mac,
-        network_id,
-        ip
-    ))
-
-    conn.commit()
-    conn.close()
-
-
 def save_host_with_ports(network_id: int,
               ip: str,
               hostname: str,

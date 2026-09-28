@@ -205,20 +205,6 @@ async def _get_authenticated_client() -> Optional[httpx.AsyncClient]:
     return client
 
 
-def _node_from_treenode(node: Dict[str, Any]) -> Dict[str, Any]:
-    """Преобразовать tree_node (раздел 7.3 документации) в формат записи дерева."""
-    dn = node.get('treenode_dn', '')
-    name = node.get('treenode_display_name', '')
-    return {
-        'organizationunitlistitem_dn': dn,
-        'organizationunitlistitem_parent_dn': node.get('treenode_parent_dn') or '',
-        'organizationunitlistitem_display_name': name,
-        'organizationunitlistitem_is_leaf': bool(node.get('treenode_is_leaf', False)),
-        'organizationunitlistitem_ou': name,
-        'children': [],
-    }
-
-
 def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
     """Создать запись подразделения по DN (заглушка, если API не вернул данные)."""
     name = ou_dn.split(',')[0]
@@ -252,17 +238,6 @@ async def _relogin(client: httpx.AsyncClient) -> bool:
     _clear_session()
     return await do_login(client, base_url, _aldpro_settings['login'],
                           _aldpro_settings.get('password', ''))
-
-
-async def invalidate_shared_client():
-    """Закрыть общий клиент, чтобы следующий запрос авторизовался заново."""
-    global _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
 
 
 def _client_alive(client) -> bool:
@@ -573,59 +548,6 @@ async def get_organizational_units(root_dn: str = None) -> Dict[str, Any]:
         return {'success': False, 'detail': str(e)}
     finally:
         await client.aclose()
-
-
-def build_ou_tree(units: list) -> list:
-    """
-    Построить иерархическое дерево подразделений из плоского списка.
-    
-    Args:
-        units: Плоский список подразделений с полями:
-               - organizationunitlistitem_dn (DN подразделения)
-               - organizationunitlistitem_parent_dn (DN родительского подразделения)
-               - organizationunitlistitem_display_name (Отображаемое имя)
-               - organizationunitlistitem_is_leaf (Является ли конечным)
-               - organizationunitlistitem_ou (Имя OU)
-    
-    Returns:
-        Иерархический список с вложенными children
-    """
-    if not units:
-        return []
-    
-    # Создаем словарь для быстрого доступа по DN
-    unit_map = {}
-    for unit in units:
-        dn = unit.get('organizationunitlistitem_dn', '')
-        if dn:  # Пропускаем записи без DN
-            unit_map[dn] = {**unit, 'children': []}
-    
-    # Строим дерево
-    root_units = []
-    for dn, unit in unit_map.items():
-        parent_dn = unit.get('organizationunitlistitem_parent_dn', '')
-        
-        # Если есть родитель и он существует в словаре
-        if parent_dn and parent_dn in unit_map:
-            unit_map[parent_dn]['children'].append(unit)
-        else:
-            # Корневое подразделение (нет родителя или родитель не найден)
-            root_units.append(unit)
-    
-    # Сортируем корневые подразделения по имени
-    root_units.sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
-    
-    # Рекурсивно сортируем все дочерние подразделения
-    def sort_children(node):
-        if node.get('children'):
-            node['children'].sort(key=lambda x: x.get('organizationunitlistitem_display_name') or x.get('organizationunitlistitem_ou') or '')
-            for child in node['children']:
-                sort_children(child)
-    
-    for root in root_units:
-        sort_children(root)
-    
-    return root_units
 
 
 async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, Any]:
