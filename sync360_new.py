@@ -447,51 +447,6 @@ def tree_to_json(tree: Dict[str, Any]) -> Dict[str, Any]:
 # Публичная операция ЭТАПА 1
 # ---------------------------------------------------------------------------
 
-async def get_y360_tree() -> Dict[str, Any]:
-    """Получить подразделения и пользователей Я360 и построить дерево.
-
-    Возвращает {'success', 'json', 'text', 'stats'}; при ошибке —
-    {'success': False, 'error': ...}. Результат сохраняется в статус.
-    """
-    started = datetime.now().isoformat(timespec='seconds')
-    try:
-        org_id = _require_configured()
-        departments, users = await asyncio.gather(
-            fetch_departments(org_id),
-            fetch_users(org_id))
-        tree = build_department_tree(departments, users, org_id)
-        payload = tree_to_json(tree)
-        text = render_tree_text(tree)
-        status = {
-            'success': True,
-            'started': started,
-            'finished': datetime.now().isoformat(timespec='seconds'),
-            'stats': tree['stats'],
-            'error': None,
-        }
-        result = {'success': True, 'json': payload, 'text': text,
-                  'stats': tree['stats']}
-    except Exception as e:
-        logger.exception('Ошибка построения дерева Яндекс 360')
-        status = {
-            'success': False,
-            'started': started,
-            'finished': datetime.now().isoformat(timespec='seconds'),
-            'stats': None,
-            'error': str(e),
-        }
-        result = {'success': False, 'error': str(e)}
-    try:
-        set_module_settings(STATUS_KEY, status)
-    except Exception as e:  # сохранение статуса не должно ломать операцию
-        logger.warning('Не удалось сохранить статус построения дерева: %s', e)
-    return result
-
-
-def get_last_status() -> Dict[str, Any]:
-    status = get_module_settings(STATUS_KEY)
-    return status if isinstance(status, dict) else {}
-
 
 # ---------------------------------------------------------------------------
 # ALD Pro: дерево OU и пользователи subtree базового OU

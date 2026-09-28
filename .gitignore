@@ -1,16 +1,1 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual Environments
-venv/
-.venv/
-env/
-
-# Logs
-*.log
-log.txt
-
-# Database files
-*.db
+(empty)

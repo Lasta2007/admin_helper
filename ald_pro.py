@@ -220,14 +220,14 @@ def _make_stub_unit(ou_dn: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Общий (переиспользуемый) клиент ALD Pro
+# Переиспользуемый авторизованный клиент ALD Pro
 #
 # Нужен для обхода больших поддеревьев OU: авторизация выполняется один раз,
 # а не на каждый запрос (раньше на каждое подразделение создавался новый
 # клиент и выполнялся вход в ALD Pro, из-за чего обход был очень медленным).
+# Клиент создаётся в _get_authenticated_client() и передаётся в fetch_child_units()
+# и get_organizational_unit_users() через параметр client.
 # ---------------------------------------------------------------------------
-
-_shared_client = None
 
 
 async def _relogin(client: httpx.AsyncClient) -> bool:
@@ -238,41 +238,6 @@ async def _relogin(client: httpx.AsyncClient) -> bool:
     _clear_session()
     return await do_login(client, base_url, _aldpro_settings['login'],
                           _aldpro_settings.get('password', ''))
-
-
-def _client_alive(client) -> bool:
-    """Проверить, что общий клиент ещё не закрыт."""
-    try:
-        return client is not None and not client.is_closed
-    except Exception:
-        return False
-
-
-async def get_shared_client(force_new: bool = False):
-    """Вернуть переиспользуемый авторизованный клиент ALD Pro (или None)."""
-    global _shared_client
-    if _client_alive(_shared_client) and not force_new:
-        return _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
-    client = await _get_authenticated_client()
-    _shared_client = client
-    return client
-
-
-async def close_shared_client():
-    """Закрыть переиспользуемый клиент ALD Pro."""
-    global _shared_client
-    if _shared_client is not None:
-        try:
-            await _shared_client.aclose()
-        except Exception:
-            pass
-        _shared_client = None
 
 
 async def _fetch_children(client: httpx.AsyncClient, ou_dn: str) -> list:
@@ -309,8 +274,9 @@ async def fetch_child_units(ou_dn: str, client=None) -> list:
 
     Args:
         ou_dn: DN родительского подразделения.
-        client: переиспользуемый клиент (см. get_shared_client); если не
-                передан — создаётся временный.
+        client: переиспользуемый авторизованный клиент (см.
+                _get_authenticated_client); если не передан — создаётся
+                временный.
 
     Returns:
         Список словарей {'dn', 'name', 'parent'}.
@@ -559,7 +525,7 @@ async def get_organizational_unit_users(ou_dn: str, client=None) -> Dict[str, An
     Args:
         ou_dn: DN организационного подразделения (URL-encoded)
         client: переиспользуемый авторизованный клиент (см.
-                get_shared_client); если не передан — создаётся
+                _get_authenticated_client); если не передан — создаётся
                 временный (с отдельной авторизацией).
     """
     own_client = client is None

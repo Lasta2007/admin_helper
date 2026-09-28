@@ -18,8 +18,7 @@
 подразделений, создание/изменение — пути /directory/v1/org/{orgId}/...)
 всегда выполняются через api360.yandex.net, независимо от хоста, выбранного
 в настройках. Выбор хоста по пути запроса сосредоточен в центральном
-helper-е resolve_base_url(), который использует request() (см. также
-fallback=True — явный повтор на другом хосте, по умолчанию выключен).
+helper-е resolve_base_url(), который использует request().
 
 Формат путей Directory API (согласно актуальной документации):
 - GET    /directory/v1/org/{orgId}/users          — список сотрудников
@@ -51,7 +50,6 @@ fallback=True — явный повтор на другом хосте, по у�
 это признак того, что запрос ушёл не на api360.yandex.net, либо у токена нет
 права directory:write_departments.
 """
-import base64
 import logging
 from typing import Dict, Any, Optional
 
@@ -84,11 +82,6 @@ PRIMARY_BASE_URL = API_HOSTS[PRIMARY_API_HOST]
 # в настройках (значение api_host может устареть/быть выставлен ошибочно).
 DIRECTORY_PATH_PREFIX = '/directory/'
 
-
-def other_host(host: str) -> str:
-    """Вернуть «другой» хост API (для диагностических сообщений)."""
-    return ('cloud-api.yandex.net' if host == PRIMARY_API_HOST
-            else PRIMARY_API_HOST)
 
 # Ссылка для получения OAuth-токена по ClientID
 OAUTH_AUTHORIZE_URL_TEMPLATE = (
@@ -170,19 +163,6 @@ def _base_url() -> str:
     return API_HOSTS.get(normalize_host(host), API_HOSTS[DEFAULT_SETTINGS['api_host']])
 
 
-def alt_base_url() -> Optional[str]:
-    """Базовый URL дополнительного хоста (или None, если не задан/совпадает)."""
-    host = normalize_host(_y360_settings.get('api_host_alt', ''))
-    if not host or API_HOSTS[host] == _base_url():
-        return None
-    return API_HOSTS[host]
-
-
-def api_base_url() -> str:
-    """Публичный доступ к базовому URL API (используется модулем синхронизации)."""
-    return _base_url()
-
-
 def org_path(org_id: str, suffix: str = '') -> str:
     """Путь Directory API: /directory/v1/org/{orgId}[/suffix]."""
     return f"/directory/v1/org/{org_id}{('/' + suffix.lstrip('/')) if suffix else ''}"
@@ -215,8 +195,7 @@ def _has_auth_header(kwargs: dict) -> bool:
 
 
 async def request(method: str, path: str, *, base_url: str = None,
-                  fallback: bool = False, token: str = None,
-                  **kwargs) -> httpx.Response:
+                  token: str = None, **kwargs) -> httpx.Response:
     """Выполнить асинхронный запрос к API Яндекс 360 с учетом двух хостов.
 
     У хостов api360.yandex.net и cloud-api.yandex.net РАЗНЫЕ наборы
@@ -225,12 +204,6 @@ async def request(method: str, path: str, *, base_url: str = None,
     api360.yandex.net — там доступны и чтение (UserService_List,
     DepartmentService_List), и запись (DepartmentService_Create,
     UserService_Create, ...).
-
-    Автоматический повтор на другом хосте при 404 по умолчанию ОТКЛЮЧЕН
-    (fallback=False): 404 от cloud-api.yandex.net означает «этот шлюз не
-    обслуживает Directory API», а не «метод временно недоступен», и ретрай
-    лишь дублирует запрос и маскирует настоящую причину ошибки. При
-    необходимости можно включить явным fallback=True.
 
     Возвращает httpx.Response. Вызывать внутри уже запущенного event loop.
     """
@@ -249,20 +222,8 @@ async def request(method: str, path: str, *, base_url: str = None,
         merged.update(auth_headers(token))
         kwargs['headers'] = merged
     first = resolve_base_url(path, method, base_url)
-    retry = None
-    if fallback and base_url is None:
-        other = API_HOSTS.get(other_host(_host_of(first)))
-        if other and other != first:
-            retry = other
-
-    resp = await make_async_client(base_url=first).request(method, path, **kwargs)
-    if retry and resp.status_code in (404, 405):
-        logger.warning(
-            "Метод %s %s вернул HTTP %s на %s — повторяю на %s",
-            method, path, resp.status_code, first, retry)
-        resp = await make_async_client(base_url=retry).request(
-            method, path, **kwargs)
-    return resp
+    return await httpx.AsyncClient(base_url=first, timeout=DEFAULT_TIMEOUT).request(
+        method, path, **kwargs)
 
 
 def _host_of(url: str) -> str:
@@ -271,16 +232,6 @@ def _host_of(url: str) -> str:
         if url == base:
             return host
     return (url or '').removeprefix('https://').removeprefix('http://').rstrip('/')
-
-
-def make_async_client(base_url: str = None, headers: Dict[str, Any] = None) -> httpx.AsyncClient:
-    """Создать httpx-клиент для запросов к API Яндекс 360 (общие настройки TLS/timeout)."""
-    return httpx.AsyncClient(
-        base_url=base_url or _base_url(),
-        timeout=DEFAULT_TIMEOUT,
-        verify=False,
-        headers=headers or {},
-    )
 
 
 def get_settings() -> Dict[str, Any]:
@@ -330,41 +281,6 @@ def save_settings(api_host: str, org_id: str, oauth_token: str,
 def build_oauth_link(client_id: str) -> str:
     """Сформировать ссылку для получения OAuth-токена по ClientID."""
     return OAUTH_AUTHORIZE_URL_TEMPLATE.format(client_id=client_id.strip())
-
-
-def _extract_org_id_from_token(token: str) -> Optional[int]:
-    """
-    Извлечь идентификатор организации из OAuth-токена.
-
-    T2-токены Яндекс 360 имеют формат ``T.{base64_payload}.{signature}``,
-    где в payload содержится id организации (pole org_id). Если токен обычного
-    формата — вернет None.
-    """
-    try:
-        parts = token.split('.')
-        if len(parts) < 2 or not parts[1]:
-            return None
-        payload_b64 = parts[1]
-        # добавляем недостающие символы padding для base64
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        payload = base64.urlsafe_b64decode(payload_b64)
-        text = payload.decode('utf-8', errors='ignore')
-        # ищем orgid/org_id в бинарном payload
-        for marker in ('orgid', 'org_id'):
-            idx = text.find(marker)
-            if idx != -1:
-                digits = ''
-                for ch in text[idx + len(marker):]:
-                    if ch.isdigit():
-                        digits += ch
-                    elif digits:
-                        break
-                if digits:
-                    return int(digits)
-        return None
-    except Exception as e:
-        logger.debug(f"Не удалось извлечь org_id из токена: {e}")
-        return None
 
 
 async def test_connection(api_host: str, org_id: str, oauth_token: str) -> Dict[str, Any]:
@@ -472,26 +388,6 @@ def auth_headers(token: Optional[str] = None) -> Dict[str, str]:
     }
 
 
-async def get_departments(limit: int = 100, page_index: int = 0) -> Dict[str, Any]:
-    """Получить список подразделений организации (DepartmentService_List).
-
-    Параметры согласно документации: только ``limit`` и ``page_index``
-    (orgId — в пути запроса)."""
-    if not _y360_settings.get('org_id') or not _y360_settings.get('oauth_token'):
-        return {'success': False, 'detail': 'Яндекс 360 не настроен'}
-    try:
-        response = await request(
-            'GET', org_path(_y360_settings['org_id'], 'departments'),
-            params={'limit': limit, 'page_index': page_index},
-            headers=auth_headers())
-        if response.status_code != 200:
-            return {'success': False, 'detail': f'HTTP {response.status_code}: {response.text[:150]}'}
-        return {'success': True, **response.json()}
-    except Exception as e:
-        logger.error(f"Ошибка получения подразделений Яндекс 360: {e}")
-        return {'success': False, 'detail': f'Ошибка: {e}'}
-
-
 def get_write_token() -> Optional[str]:
     """Вернуть отдельный токен для операций ЗАПИСИ (создание/изменение
     подразделений и сотрудников), если он задан; иначе — основной токен.
@@ -556,73 +452,3 @@ async def create_department(org_id: str, name: str, parent_department_id=None,
             'data': body}
 
 
-async def update_department(org_id: str, dept_id: str, payload: Dict[str, Any],
-                            token: Optional[str] = None) -> Dict[str, Any]:
-    """Изменить подразделение (DepartmentService_Update).
-
-    PATCH /directory/v1/org/{orgId}/departments/{id}
-    """
-    resp = await request('PATCH', org_path(org_id, f'departments/{dept_id}'),
-                         json=payload,
-                         headers=auth_headers(token))
-    if resp.status_code != 200:
-        return {'success': False, 'status': resp.status_code,
-                'detail': resp.text[:300]}
-    return {'success': True, 'data': resp.json() or {}}
-
-
-async def patch_user(org_id: str, user_id: str, payload: Dict[str, Any],
-                     token: Optional[str] = None) -> Dict[str, Any]:
-    """Изменить сотрудника (UserService_Update).
-
-    PATCH /directory/v1/org/{orgId}/users/{id}
-    """
-    resp = await request('PATCH', org_path(org_id, f'users/{user_id}'),
-                         json=payload,
-                         headers=auth_headers(token))
-    if resp.status_code != 200:
-        return {'success': False, 'status': resp.status_code,
-                'detail': resp.text[:300]}
-    return {'success': True, 'data': resp.json() or {}}
-
-
-async def create_employee(org_id: str, payload: Dict[str, Any],
-                          token: Optional[str] = None) -> Dict[str, Any]:
-    """Создать сотрудника (UserService_Create).
-
-    POST /directory/v1/org/{orgId}/users — выполняется через request(),
-    который для путей Directory API всегда использует основной хост
-    api360.yandex.net.
-    """
-    resp = await request('POST', org_path(org_id, 'users'),
-                         json=payload,
-                         headers=auth_headers(token or get_write_token()))
-    if resp.status_code not in (200, 201):
-        return {'success': False, 'status': resp.status_code,
-                'detail': resp.text[:300], 'url': str(resp.request.url)}
-    body = resp.json() or {}
-    emp = body.get('employee') or body.get('user') or body
-    return {'success': True,
-            'login': str(emp.get('login') or payload.get('login') or ''),
-            'id': str(emp.get('id') or ''),
-            'data': body}
-
-
-async def get_users(limit: int = 100, page_index: int = 0) -> Dict[str, Any]:
-    """Получить список сотрудников организации (UserService_List).
-
-    GET /directory/v1/org/{orgId}/users?limit=N&page_index=M — orgId только
-    в пути, query-параметры списка: limit и page_index."""
-    if not _y360_settings.get('org_id') or not _y360_settings.get('oauth_token'):
-        return {'success': False, 'detail': 'Яндекс 360 не настроен'}
-    try:
-        response = await request(
-            'GET', org_path(_y360_settings['org_id'], 'users'),
-            params={'limit': limit, 'page_index': page_index},
-            headers=auth_headers())
-        if response.status_code != 200:
-            return {'success': False, 'detail': f'HTTP {response.status_code}: {response.text[:150]}'}
-        return {'success': True, **response.json()}
-    except Exception as e:
-        logger.error(f"Ошибка получения сотрудников Яндекс 360: {e}")
-        return {'success': False, 'detail': f'Ошибка: {e}'}
