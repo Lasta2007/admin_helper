@@ -3,7 +3,7 @@ import asyncio
 import ipaddress
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -135,10 +135,24 @@ def health():
 # Каталог со статикой
 STATIC_DIR = Path(__file__).parent / "static"
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """Статика без кэширования: браузер всегда получает актуальные
+    index.html и app.js (иначе после обновления интерфейса пользователь
+    видит старую страницу без новых элементов управления)."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
 if STATIC_DIR.exists():
     app.mount(
         "/",
-        StaticFiles(
+        NoCacheStaticFiles(
             directory=STATIC_DIR,
             html=True
         ),
